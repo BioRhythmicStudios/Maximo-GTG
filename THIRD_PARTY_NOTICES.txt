@@ -1,0 +1,48 @@
+THIRD-PARTY NOTICES
+
+A build of this project uses the following open-source software. Their licence texts are in LICENSES\.
+
+- PS2Recomp runtime (ps2xRuntime, ps2xIOP), https://github.com/ran-j/PS2Recomp
+  GNU General Public License v3.0 (LICENSES\PS2Recomp-GPL-3.0.txt). This project uses the modified fork https://github.com/BioRhythmicStudios/PS2Recomp.
+- paraLLEl-GS, https://github.com/Arntzen-Software/parallel-gs
+  GNU Lesser General Public License v3.0 or later (LICENSES\paraLLEl-GS-LGPL-3.0.txt; the GPL v3 text it refers to is
+  LICENSES\PS2Recomp-GPL-3.0.txt).
+- Granite (Vulkan backend used by paraLLEl-GS): MIT (LICENSES\Granite-MIT.txt).
+- SMAA, https://github.com/iryoku/smaa (anti-aliasing shaders, via Granite): MIT (LICENSES\SMAA-MIT.txt).
+- volk: MIT (LICENSES\volk-MIT.txt).
+- HD texture packs (the converter and the game):
+  - bc7enc, https://github.com/richgel999/bc7enc (BC7 compression): MIT or public domain
+    (LICENSES\bc7enc-MIT-or-PublicDomain.txt).
+  - xxHash 0.8.2, https://github.com/Cyan4973/xxHash (texture hashes): BSD 2-clause (LICENSES\xxHash-BSD-2.txt).
+  - miniz (zip reading, via Granite/Fossilize): MIT (LICENSES\miniz-MIT.txt).
+  - stb_image, stb_image_resize2 (PNG decoding, scaling): MIT or public domain
+    (LICENSES\stb-MIT-or-PublicDomain.txt).
+- Vulkan-Headers: see LICENSES\Vulkan-Headers.txt.
+- raylib: zlib/libpng licence (LICENSES\raylib-zlib.txt), with its bundled GLFW (LICENSES\GLFW-zlib.txt) and
+  miniaudio (public domain or MIT No Attribution, LICENSES\miniaudio-PublicDomain-or-MIT-0.txt).
+- FFmpeg 7.1 (libavcodec, libavutil, libswresample; game\avcodec-61.dll, avutil-59.dll, swresample-5.dll),
+  https://ffmpeg.org, GNU Lesser General Public License v2.1 or later (LICENSES\FFmpeg-LGPL-2.1.txt,
+  LICENSES\FFmpeg-LICENSE.md). Used unmodified as separate DLLs, which the game loads at run time; you may replace
+  them with your own build of the same FFmpeg version. Binaries: ffmpeg-msvc-prebuilt release n7.1-241205,
+  lgpl-amd64-shared, https://github.com/System233/ffmpeg-msvc-prebuilt (build scripts: MIT,
+  LICENSES\ffmpeg-msvc-prebuilt-LICENSE.txt). FFmpeg source: https://github.com/FFmpeg/FFmpeg/tree/n7.1 and
+  https://ffmpeg.org/releases/ffmpeg-7.1.tar.xz.
+  The FFmpeg DLLs contain or load these libraries:
+  - libvpx 1.15.0 (inside avcodec-61.dll): BSD 3-clause (LICENSES\libvpx-BSD-3.txt, LICENSES\libvpx-PATENTS.txt).
+  - libwebp 1.4.0 (game\libwebp.dll, libwebpmux.dll, libsharpyuv.dll): BSD 3-clause (LICENSES\libwebp-BSD-3.txt,
+    LICENSES\libwebp-PATENTS.txt).
+  - libjxl (game\jxl.dll, jxl_cms.dll, jxl_threads.dll): BSD 3-clause (LICENSES\libjxl-BSD-3.txt,
+    LICENSES\libjxl-PATENTS.txt), with Highway 1.2.0 (Apache 2.0 or BSD 3-clause, LICENSES\highway-Apache-2.0.txt,
+    LICENSES\highway-BSD-3.txt), skcms (BSD 3-clause, LICENSES\skcms-BSD-3.txt) and Little-CMS
+    (MIT, LICENSES\lcms2-MIT.txt).
+  - Brotli 1.0.9 (game\brotlicommon.dll, brotlidec.dll, brotlienc.dll): MIT (LICENSES\brotli-MIT.txt).
+  - zlib 1.3.1 (game\zlib1.dll): zlib licence (LICENSES\zlib.txt).
+- Microsoft Visual C++ runtime (game\msvcp140.dll, vcruntime140.dll, vcruntime140_1.dll), redistributed under the
+  Microsoft Visual Studio licence terms.
+
+Source code: the source of the GPL and LGPL components, including the modifications used for this build, is available
+from the person who gave you this build, on request.
+
+This build contains no data from the game disc and no texture pack. Texture packs are made by their authors;
+Marcus' Ultimate Remaster texture pack is by Marcus (marcusmart17), from archive.org.
+This build contains no data from the game disc. Maximo: Ghosts to Glory is (c) Capcom.

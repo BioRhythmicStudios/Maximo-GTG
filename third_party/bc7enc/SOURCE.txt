@@ -1,0 +1,6 @@
+bc7enc by Richard Geldreich, Jr. (MIT or public domain, see LICENSE / end of bc7enc.c)
+From https://github.com/richgel999/bc7enc commit f66c2e489b07138f2673a2fb3d27c1aa1d565c48, downloaded 3 Nov 2026 (owner OK).
+sha256:
+817bfa5d30a2c4702e8c387ebb5a69398034c95905f580a6b8cd4261da901058 *bc7enc.c
+6a129cd608eebf9f2796dd1ad4659f8c4fbe2a2ace371b728fc4ece92f449c90 *bc7enc.h
+51aad8f8a068b782671f9277631ec721b72c0b34624c38a684ff46df8bc780c9 *LICENSE

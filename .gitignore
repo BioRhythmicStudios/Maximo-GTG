@@ -1,0 +1,17 @@
+# Everything made from your disc stays here, on your PC. Never commit or share it.
+/build/
+/generated/
+/dist/
+/deps/
+/disc/
+*.iso
+SLES_*
+*.exe
+*.dll
+*.pdb
+*.obj
+*.lib
+*.zip
+*.log
+*.wav
+__pycache__/

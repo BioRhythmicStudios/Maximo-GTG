@@ -1,0 +1,8 @@
+[submodule "external/PS2Recomp"]
+	path = external/PS2Recomp
+	url = https://github.com/BioRhythmicStudios/PS2Recomp.git
+	branch = maximo
+[submodule "external/parallel-gs"]
+	path = external/parallel-gs
+	url = https://github.com/BioRhythmicStudios/parallel-gs.git
+	branch = maximo
