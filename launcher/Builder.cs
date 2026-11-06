@@ -1,0 +1,427 @@
+// The Build button: fetches the tools and the source, then compiles the game from the player's own disc on this PC.
+// Everything it makes stays in .\source, .\tools and .\game. The game is never downloaded, because it can't be shared.
+using System;
+using System.ComponentModel;
+using System.Diagnostics;
+using System.IO;
+using System.IO.Compression;
+using System.Linq;
+using System.Net;
+using System.Runtime.InteropServices;
+using System.Security.Cryptography.X509Certificates;
+using System.Text;
+using System.Text.RegularExpressions;
+using System.Threading;
+
+static class Builder
+{
+    const string SourceUrl = "https://github.com/BioRhythmicStudios/Maximo-GTG.git";
+    const string GitUrl = "https://github.com/git-for-windows/git/releases/download/v2.56.0.windows.4/MinGit-2.56.0.4-64-bit.zip";
+    const string GitSha256 = "E3BF78351FE777FBA47DDEE5950082F8A98BB0F02604FDC7BA3EE2CB68FFA877";
+    const string CppToolsUrl = "https://aka.ms/vs/18/stable/vs_BuildTools.exe";
+    const string CppToolsArgs = "--passive --wait --norestart --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended " +
+                                "--add Microsoft.VisualStudio.Component.VC.CMake.Project";
+    const int MaxRootLength = 100;
+    const long GB = 1024L * 1024 * 1024;
+    const long BuildSpace = 12 * GB, CppToolsSpace = 8 * GB;
+
+    static readonly string Source = Path.Combine(Paths.Root, "source");
+    static readonly string Tools = Path.Combine(Paths.Root, "tools");
+    static readonly string OwnGit = Path.Combine(Tools, "git");
+    static readonly string BuildLog = Path.Combine(Paths.Logs, "build.log");
+
+    static readonly object Gate = new object();
+    static Process current;
+    static volatile bool cancelled;
+
+    // Tests on a PC with Git installed use this to exercise the downloaded copy.
+    public static bool ForceOwnGit;
+
+    public static bool NeedsCppTools { get { return CppToolsFolder() == null; } }
+
+    static string Vswhere
+    {
+        get
+        {
+            return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86),
+                                "Microsoft Visual Studio\\Installer\\vswhere.exe");
+        }
+    }
+
+    static string CppToolsFolder()
+    {
+        if (!File.Exists(Vswhere))
+            return null;
+        var info = new ProcessStartInfo(Vswhere, "-latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 " +
+                                                 "Microsoft.VisualStudio.Component.VC.CMake.Project -property installationPath")
+        {
+            UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true
+        };
+        using (Process p = Process.Start(info))
+        {
+            string text = p.StandardOutput.ReadToEnd().Trim();
+            p.WaitForExit();
+            return text.Length > 0 ? text : null;
+        }
+    }
+
+    static string SystemGit()
+    {
+        if (ForceOwnGit)
+            return null;
+        foreach (string folder in (Environment.GetEnvironmentVariable("PATH") ?? "").Split(';'))
+        {
+            try
+            {
+                string git = Path.Combine(folder.Trim(), "git.exe");
+                if (folder.Length > 0 && File.Exists(git))
+                    return git;
+            }
+            catch (ArgumentException) { } // a malformed PATH entry
+        }
+        return null;
+    }
+
+    public static void Cancel()
+    {
+        cancelled = true;
+        lock (Gate)
+        {
+            if (current == null)
+                return;
+            try
+            {
+                var info = new ProcessStartInfo("taskkill.exe", "/PID " + current.Id + " /T /F") { UseShellExecute = false, CreateNoWindow = true };
+                using (Process kill = Process.Start(info))
+                    kill.WaitForExit();
+            }
+            catch (Exception e) { Log.Write("build: cancel: " + e.Message); }
+        }
+    }
+
+    static void CheckCancelled()
+    {
+        if (cancelled)
+            throw new OperationCanceledException("The build was cancelled. Press Build to continue it.");
+    }
+
+    // stage: what is happening, and percent of that stage (below 0: unknown). line: output for the log view.
+    public static void Run(Action<string, int> stage, Action<string> line)
+    {
+        cancelled = false;
+        Directory.CreateDirectory(Paths.Logs);
+        File.AppendAllText(BuildLog, "\r\nBuild started " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + "\r\n");
+        using (var log = new StreamWriter(BuildLog, true, new UTF8Encoding(false)) { AutoFlush = true })
+        {
+            Action<string> output = text =>
+            {
+                lock (log) log.WriteLine(text);
+                line(text);
+            };
+
+            bool needCppTools = NeedsCppTools;
+            CheckRoom(needCppTools);
+
+            string git = SystemGit();
+            if (git == null)
+            {
+                stage("Getting Git", -1);
+                git = GetOwnGit(stage);
+            }
+            string gitFolder = Path.GetDirectoryName(git);
+            output("Git: " + git);
+
+            if (needCppTools)
+            {
+                stage("Installing Microsoft's C++ Build Tools", -1);
+                InstallCppTools(output, stage);
+            }
+
+            GetSource(git, gitFolder, stage, output);
+            Compile(gitFolder, stage, output);
+
+            stage("Installing the game", -1);
+            string built = Path.Combine(Source, "dist\\game");
+            string target = Path.GetDirectoryName(Paths.Game);
+            Directory.CreateDirectory(target);
+            foreach (string file in Directory.GetFiles(built))
+                File.Copy(file, Path.Combine(target, Path.GetFileName(file)), true);
+            output("Build finished.");
+        }
+    }
+
+    static void CheckRoom(bool needCppTools)
+    {
+        if (Paths.Root.Length > MaxRootLength)
+            throw new Exception("This folder's path is too long for the compiler. Move the launcher somewhere shorter, such as C:\\Games\\Maximo.");
+        long need = BuildSpace + (needCppTools ? CppToolsSpace : 0);
+        long free = new DriveInfo(Path.GetPathRoot(Paths.Root)).AvailableFreeSpace;
+        if (free < need)
+            throw new Exception("The build needs about " + need / GB + " GB of free disk space here, and this drive has " + free / GB + " GB.");
+    }
+
+    static string GetOwnGit(Action<string, int> stage)
+    {
+        string git = Path.Combine(OwnGit, "cmd\\git.exe");
+        if (File.Exists(git))
+            return git;
+        Directory.CreateDirectory(Tools);
+        string zip = Path.Combine(Tools, "mingit.zip");
+        Download(GitUrl, zip, "Downloading Git", stage);
+        if (!string.Equals(Setup.Sha256(zip), GitSha256, StringComparison.OrdinalIgnoreCase))
+        {
+            File.Delete(zip);
+            throw new Exception("The Git download does not match its hash. Press Build to try again.");
+        }
+        string unpacking = OwnGit + ".tmp";
+        if (Directory.Exists(unpacking))
+            Directory.Delete(unpacking, true);
+        ZipFile.ExtractToDirectory(zip, unpacking);
+        Directory.Move(unpacking, OwnGit);
+        File.Delete(zip);
+        return git;
+    }
+
+    static void InstallCppTools(Action<string> output, Action<string, int> stage)
+    {
+        Directory.CreateDirectory(Tools);
+        string installer = Path.Combine(Tools, "vs_BuildTools.exe");
+        Download(CppToolsUrl, installer, "Downloading Microsoft's installer", stage);
+        if (!SignedByMicrosoft(installer))
+        {
+            File.Delete(installer);
+            throw new Exception("Microsoft's installer failed its signature check, so it was not run.");
+        }
+        stage("Installing Microsoft's C++ Build Tools. This is a large download.", -1);
+        var info = new ProcessStartInfo(installer, CppToolsArgs) { UseShellExecute = true, Verb = "runas" };
+        try
+        {
+            using (Process p = Process.Start(info))
+            {
+                lock (Gate) current = p;
+                p.WaitForExit();
+                lock (Gate) current = null;
+                CheckCancelled();
+                output("C++ Build Tools installer: exit code " + p.ExitCode);
+                if (p.ExitCode != 0 && p.ExitCode != 3010) // 3010: done, a restart is due
+                    throw new Exception("Microsoft's installer stopped with code " + p.ExitCode + ".");
+            }
+        }
+        catch (Win32Exception e)
+        {
+            if (e.NativeErrorCode == 1223)
+                throw new OperationCanceledException("The C++ tools need your permission to install. Press Build to try again.");
+            throw;
+        }
+        if (NeedsCppTools)
+            throw new Exception("The C++ tools still aren't available. Restart Windows and press Build again.");
+    }
+
+    // A dropped connection can leave a submodule half made, which git can't continue: after two tries, start clean.
+    static void GetSource(string git, string gitFolder, Action<string, int> stage, Action<string> output)
+    {
+        const int Attempts = 4, FreshFrom = 3;
+        for (int attempt = 1; ; attempt++)
+        {
+            try
+            {
+                FetchSource(git, gitFolder, stage, output);
+                return;
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception e)
+            {
+                output("Download attempt " + attempt + " of " + Attempts + " failed: " + e.Message);
+                if (attempt == Attempts)
+                    throw new Exception("The download failed: " + e.Message + " Check your internet connection and press Build again.");
+            }
+            Thread.Sleep(3000);
+            CheckCancelled();
+            if (attempt + 1 >= FreshFrom && Directory.Exists(Source))
+            {
+                output("Starting the download again from a clean folder.");
+                RemoveFolder(Source, gitFolder, output);
+            }
+        }
+    }
+
+    static void FetchSource(string git, string gitFolder, Action<string, int> stage, Action<string> output)
+    {
+        const string longPaths = "-c core.longpaths=true "; // SPIRV-Cross test files exceed the Windows limit otherwise
+        stage("Downloading the source code", -1);
+        if (Directory.Exists(Path.Combine(Source, ".git")))
+        {
+            Tool(git, longPaths + "fetch origin main", Source, gitFolder, output);
+            Tool(git, longPaths + "reset --hard origin/main", Source, gitFolder, output);
+        }
+        else
+        {
+            string cloning = Source + ".tmp";
+            if (Directory.Exists(cloning))
+                RemoveFolder(cloning, gitFolder, output);
+            Tool(git, longPaths + "clone --progress \"" + SourceUrl + "\" \"" + cloning + "\"", Paths.Root, gitFolder, output);
+            Directory.Move(cloning, Source);
+        }
+        stage("Downloading the libraries", -1);
+        Tool(git, longPaths + "submodule update --init --recursive --force", Source, gitFolder, output);
+    }
+
+    // Directory.Delete fails on paths over the Windows limit, which a clone can have.
+    static void RemoveFolder(string folder, string gitFolder, Action<string> output)
+    {
+        Tool(Environment.GetEnvironmentVariable("ComSpec") ?? "cmd.exe", "/d /s /c \"rmdir /s /q \"" + folder + "\"\"", Paths.Root, gitFolder, output);
+    }
+
+    static void Compile(string gitFolder, Action<string, int> stage, Action<string> output)
+    {
+        var step = new Regex(@"^\[(\d)/6\] (.*)$");
+        var ninja = new Regex(@"^\[(\d+)/(\d+)\]");
+        string text = "Building";
+        Action<string> parse = l =>
+        {
+            Match m = step.Match(l);
+            if (m.Success)
+            {
+                text = "Step " + m.Groups[1].Value + " of 6: " + m.Groups[2].Value;
+                stage(text, -1);
+            }
+            else if ((m = ninja.Match(l)).Success)
+                stage(text, (int)(100L * long.Parse(m.Groups[1].Value) / Math.Max(1L, long.Parse(m.Groups[2].Value))));
+            output(l);
+        };
+        string script = Path.Combine(Source, "build.cmd");
+        Tool(Environment.GetEnvironmentVariable("ComSpec") ?? "cmd.exe",
+             "/d /s /c \"\"" + script + "\" \"" + Paths.Disc + "\"\"", Source, gitFolder, parse);
+    }
+
+    static void Tool(string exe, string arguments, string folder, string gitFolder, Action<string> output)
+    {
+        CheckCancelled();
+        var info = new ProcessStartInfo(exe, arguments)
+        {
+            UseShellExecute = false, CreateNoWindow = true, WorkingDirectory = folder,
+            RedirectStandardOutput = true, RedirectStandardError = true
+        };
+        info.EnvironmentVariables["PATH"] = gitFolder + ";" + info.EnvironmentVariables["PATH"];
+        info.EnvironmentVariables["GIT_TERMINAL_PROMPT"] = "0";
+        string problem = null;
+        using (var p = new Process { StartInfo = info })
+        {
+            DataReceivedEventHandler received = (s, e) =>
+            {
+                if (e.Data == null) return;
+                if (e.Data.StartsWith("fatal:") || e.Data.StartsWith("Error:")) problem = e.Data;
+                output(e.Data);
+            };
+            p.OutputDataReceived += received;
+            p.ErrorDataReceived += received;
+            p.Start();
+            lock (Gate) current = p;
+            p.BeginOutputReadLine();
+            p.BeginErrorReadLine();
+            p.WaitForExit();
+            lock (Gate) current = null;
+            CheckCancelled();
+            if (p.ExitCode != 0)
+                throw new Exception((problem ?? "The build stopped (" + Path.GetFileName(exe) + ", code " + p.ExitCode + ").") + " Details are in logs\\build.log.");
+        }
+    }
+
+    static void Download(string url, string target, string text, Action<string, int> stage)
+    {
+        ServicePointManager.SecurityProtocol |= SecurityProtocolType.Tls12;
+        string partial = target + ".part";
+        for (int attempt = 1; ; attempt++)
+        {
+            CheckCancelled();
+            try
+            {
+                var request = (HttpWebRequest)WebRequest.Create(url);
+                request.UserAgent = "MaximoLauncher/1.0";
+                request.Timeout = 60000;
+                request.ReadWriteTimeout = 60000;
+                using (WebResponse response = request.GetResponse())
+                using (Stream from = response.GetResponseStream())
+                using (var to = new FileStream(partial, FileMode.Create))
+                {
+                    long total = response.ContentLength, have = 0;
+                    var buffer = new byte[1 << 16];
+                    for (int n; (n = from.Read(buffer, 0, buffer.Length)) > 0;)
+                    {
+                        CheckCancelled();
+                        to.Write(buffer, 0, n);
+                        have += n;
+                        stage(text, total > 0 ? (int)(100 * have / total) : -1);
+                    }
+                }
+                if (File.Exists(target))
+                    File.Delete(target);
+                File.Move(partial, target);
+                return;
+            }
+            catch (WebException e)
+            {
+                Log.Write("build: download " + url + " attempt " + attempt + ": " + e.Message);
+                if (attempt >= 3)
+                    throw new Exception(text + " failed: " + e.Message);
+                Thread.Sleep(2000 * attempt);
+            }
+        }
+    }
+
+    // ---- signature check of a file about to run with administrator rights ----
+
+    [StructLayout(LayoutKind.Sequential)]
+    struct FileInfoData
+    {
+        public uint Size;
+        public IntPtr Path, Handle, KnownSubject;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    struct TrustData
+    {
+        public uint Size;
+        public IntPtr PolicyData, SipData;
+        public uint UiChoice, RevocationChecks, UnionChoice;
+        public IntPtr File;
+        public uint StateAction;
+        public IntPtr StateData, UrlReference;
+        public uint ProviderFlags, UiContext;
+        public IntPtr SignatureSettings;
+    }
+
+    [DllImport("wintrust.dll", CharSet = CharSet.Unicode)]
+    static extern int WinVerifyTrust(IntPtr window, ref Guid action, ref TrustData data);
+
+    public static bool SignedByMicrosoft(string path)
+    {
+        const uint NoUi = 2, FileChoice = 1;
+        var action = new Guid("00AAC56B-CD44-11D0-8CC2-00C04FC295EE"); // WINTRUST_ACTION_GENERIC_VERIFY_V2
+        IntPtr name = Marshal.StringToCoTaskMemUni(path);
+        var file = new FileInfoData { Size = (uint)Marshal.SizeOf(typeof(FileInfoData)), Path = name };
+        IntPtr fileMemory = Marshal.AllocCoTaskMem(Marshal.SizeOf(typeof(FileInfoData)));
+        try
+        {
+            Marshal.StructureToPtr(file, fileMemory, false);
+            var data = new TrustData
+            {
+                Size = (uint)Marshal.SizeOf(typeof(TrustData)), UiChoice = NoUi, UnionChoice = FileChoice, File = fileMemory
+            };
+            if (WinVerifyTrust(IntPtr.Zero, ref action, ref data) != 0)
+                return false;
+            using (var certificate = new X509Certificate(X509Certificate.CreateFromSignedFile(path)))
+                return certificate.Subject.Contains("O=Microsoft Corporation");
+        }
+        catch (Exception e)
+        {
+            Log.Write("build: signature check: " + e.Message);
+            return false;
+        }
+        finally
+        {
+            Marshal.FreeCoTaskMem(fileMemory);
+            Marshal.FreeCoTaskMem(name);
+        }
+    }
+}

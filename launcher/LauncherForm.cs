@@ -8,7 +8,6 @@ using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Text;
 using System.IO;
-using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Windows.Forms;
@@ -30,9 +29,10 @@ class LauncherForm : Form
     readonly Bitmap shell, buttonPlay, buttonNormal, buttonHover, buttonPressed, iconPlay;
     readonly Bitmap[] navIcons = new Bitmap[NavNames.Length];
     Bitmap banner, pageBack;
-    readonly Panel[] pages = new Panel[NavNames.Length];
+    const int BuildPage = 7; // after the menu's pages; only the Build button opens it
+    readonly Panel[] pages = new Panel[NavNames.Length + 1];
     int page = -1, hover = -2, pressed = -2; // -1 = Play, -3 = minimize, -4 = close
-    bool busy;
+    bool busy, building;
 
     readonly Label status = new Label(), tip = new Label(), lastRun = new Label();
     readonly Button setupIso = new Button(), setupFolder = new Button();
@@ -41,12 +41,21 @@ class LauncherForm : Form
     readonly CheckBox hdTextures = new CheckBox();
     readonly Button hdTexturesButton = new Button();
     readonly ComboBox picture = new ComboBox(), scaling = new ComboBox(), aspect = new ComboBox(), frameRate = new ComboBox();
-    readonly TextBox notes = new TextBox();
+    readonly TextBox notes = new TextBox(), buildLog = new TextBox();
+    readonly Button rebuild = new Button(), cancelBuild = new Button();
+    readonly Label buildStage = new Label();
+    readonly ProgressBar buildBar = new ProgressBar();
 
     static Bitmap Art(string name)
     {
-        using (Stream s = Assembly.GetExecutingAssembly().GetManifestResourceStream(name))
-        using (var image = new Bitmap(s))
+        // The art sits in .\art beside the launcher. Without it the launcher still opens, with a plain look.
+        string path = Path.Combine(Paths.Art, name);
+        if (!File.Exists(path))
+        {
+            Log.Write("art missing: " + path);
+            return new Bitmap(1, 1);
+        }
+        using (var image = new Bitmap(path))
             return new Bitmap(image);
     }
 
@@ -91,6 +100,7 @@ class LauncherForm : Form
         ShowPage(-1);
         FormClosing += delegate
         {
+            if (building) Builder.Cancel();
             Process game = Game.Running;
             try
             {
@@ -138,7 +148,7 @@ class LauncherForm : Form
         if (banner != null) g.DrawImage(banner, BannerArea);
         g.DrawImage(shell, 0, 0, DesignW, DesignH);
         if (banner == null) DrawTitle(g);
-        DrawButton(g, PlayArea, -1, "Play", iconPlay, buttonPlay, 26f);
+        DrawButton(g, PlayArea, -1, building ? "Building..." : File.Exists(Paths.Game) ? "Play" : "Build", iconPlay, buttonPlay, 26f);
         for (int i = 0; i < NavNames.Length; i++)
             DrawButton(g, NavArea(i), i, NavNames[i], navIcons[i], null, 20f);
         DrawWindowButton(g, MinimizeArea, -3, "–");
@@ -262,7 +272,7 @@ class LauncherForm : Form
     protected override bool ProcessCmdKey(ref Message message, Keys key)
     {
         bool typing = ActiveControl is TextBoxBase || ActiveControl is ComboBox;
-        if (key == Keys.Escape && page >= 0) { ShowPage(-1); return true; }
+        if (key == Keys.Escape && page >= 0 && !building) { ShowPage(-1); return true; }
         if (!typing && (key == Keys.Up || key == Keys.Down))
         {
             int count = NavNames.Length + 1; // Play, then the menu
@@ -467,12 +477,33 @@ class LauncherForm : Form
         notes.Bounds = R(new Rectangle(28, 192, 980, 120));
         p.Controls.Add(notes);
         Action2(p, zipLogs, "Zip logs for a bug report", 28, 324, 280, delegate { ZipLogs(); });
+        Action2(p, rebuild, "Update and rebuild the game", 318, 324, 300, delegate { StartBuild(); });
         Tick(p, recordAudio, "Record the game's audio too (only for sound problems; about 11 MB a minute)", false, 28, 374, 980, delegate { });
         lastRun.BackColor = Color.Transparent;
         lastRun.ForeColor = Text2;
         lastRun.Font = new Font("Segoe UI", 15f * scale, GraphicsUnit.Pixel);
         lastRun.Bounds = R(new Rectangle(28, 412, 980, 64));
         p.Controls.Add(lastRun);
+
+        p = NewPage(BuildPage, "Building the game");
+        buildStage.BackColor = Color.Transparent;
+        buildStage.ForeColor = Text1;
+        buildStage.Font = new Font("Segoe UI", 18f * scale, GraphicsUnit.Pixel);
+        buildStage.Bounds = R(new Rectangle(28, 70, 980, 32));
+        p.Controls.Add(buildStage);
+        buildBar.Bounds = R(new Rectangle(28, 108, 980, 22));
+        p.Controls.Add(buildBar);
+        Text2Label(p, "The game is compiled here from your own disc, so this can take a while. You can use your PC meanwhile.", 28, 140, 980, 28, Text2);
+        buildLog.Multiline = true;
+        buildLog.ReadOnly = true;
+        buildLog.WordWrap = false;
+        buildLog.BackColor = Dark;
+        buildLog.ForeColor = Text2;
+        buildLog.BorderStyle = BorderStyle.FixedSingle;
+        buildLog.Font = new Font("Consolas", 13f * scale, GraphicsUnit.Pixel);
+        buildLog.Bounds = R(new Rectangle(28, 174, 980, 252));
+        p.Controls.Add(buildLog);
+        Action2(p, cancelBuild, "Cancel", 28, 436, 160, delegate { cancelBuild.Enabled = false; buildStage.Text = "Cancelling..."; Builder.Cancel(); });
 
         p = NewPage(5, "About");
         Text2Label(p, Build.Name, 28, 80, 980, 30, Text1, 19f);
@@ -502,8 +533,8 @@ class LauncherForm : Form
     {
         string why;
         bool ready = Setup.DiscReady(out why);
-        if (!File.Exists(Paths.Game)) { ready = false; why = "The game isn't built yet: run build.cmd with your disc, see the README."; }
-        status.Text = ready ? why : why + " Open Game Files and choose your own Maximo PAL disc image (.iso).";
+        if (!File.Exists(Paths.Game)) { ready = false; why = "The game isn't built yet: press Build."; }
+        status.Text = ready || File.Exists(Paths.Game) == false ? why : why + " Open Game Files and choose your own Maximo PAL disc image (.iso).";
         status.ForeColor = ready ? Good : Bad;
     }
 
@@ -526,6 +557,7 @@ class LauncherForm : Form
     {
         busy = on;
         EnableAll(this, !on);
+        cancelBuild.Enabled = building;
         if (!on) { vu1Pipeline.Enabled = vu1Thread.Checked; Refresh2(); RefreshBanner(); }
         Invalidate();
     }
@@ -565,9 +597,107 @@ class LauncherForm : Form
                 RunInBackground(() => Setup.Install(dialog.SelectedPath, Progress), null);
     }
 
-    void Play()
+    // ---- the Build button (Builder.cs) ----
+
+    void StartBuild()
     {
         if (busy) return;
+        string why, iso = null;
+        if (!Setup.DiscReady(out why))
+        {
+            using (var dialog = new OpenFileDialog { Filter = "Disc images (*.iso)|*.iso", Title = "Your Maximo: Ghosts to Glory PAL disc image" })
+            {
+                if (dialog.ShowDialog(this) != DialogResult.OK) return;
+                iso = dialog.FileName;
+            }
+        }
+        string message = "This compiles the game on your PC from your own disc. It downloads the source code and libraries (about 2 GB) " +
+                         "and needs about 12 GB of disk space. It can take a while.";
+        if (Builder.NeedsCppTools)
+            message += "\r\n\r\nYour PC also needs Microsoft's free C++ Build Tools, a further download of several GB that needs about 8 GB more. " +
+                       "Windows will ask for your permission, and they are covered by Microsoft's licence terms.";
+        if (MessageBox.Show(this, message + "\r\n\r\nStart now?", Build.Name, MessageBoxButtons.OKCancel, MessageBoxIcon.Information) != DialogResult.OK)
+            return;
+
+        var recent = new System.Collections.Generic.Queue<string>();
+        Action<string> line = text =>
+        {
+            lock (recent)
+            {
+                recent.Enqueue(text);
+                while (recent.Count > 200) recent.Dequeue();
+            }
+        };
+        Action<string, int> stage = (text, percent) =>
+        {
+            if (!IsHandleCreated) return;
+            BeginInvoke((Action)(() =>
+            {
+                if (cancelBuild.Enabled) buildStage.Text = text;
+                buildBar.Style = percent < 0 ? ProgressBarStyle.Marquee : ProgressBarStyle.Continuous;
+                if (percent >= 0) buildBar.Value = Math.Min(100, percent);
+            }));
+        };
+        var view = new System.Windows.Forms.Timer { Interval = 500 };
+        Action showLog = () =>
+        {
+            string[] shown;
+            lock (recent) shown = recent.ToArray();
+            string joined = string.Join("\r\n", shown);
+            if (joined == buildLog.Text) return;
+            buildLog.Text = joined;
+            buildLog.SelectionStart = buildLog.TextLength;
+            buildLog.ScrollToCaret();
+        };
+        view.Tick += delegate { showLog(); };
+
+        building = true;
+        buildStage.Text = "Starting...";
+        buildLog.Text = "";
+        ShowPage(BuildPage);
+        view.Start();
+        Busy(true);
+        var worker = new Thread(() =>
+        {
+            string error = null;
+            bool stopped = false;
+            try
+            {
+                if (iso != null)
+                {
+                    stage("Reading your disc", -1);
+                    Setup.Install(iso, text => stage(text, -1));
+                }
+                Builder.Run(stage, line);
+            }
+            catch (OperationCanceledException e) { stopped = true; error = e.Message; }
+            catch (Exception e) { error = e.Message; Log.Write("build: " + e); }
+            if (!IsHandleCreated) return;
+            BeginInvoke((Action)(() =>
+            {
+                view.Stop();
+                view.Dispose();
+                showLog();
+                building = false;
+                buildBar.Style = ProgressBarStyle.Continuous;
+                buildBar.Value = error == null ? 100 : 0;
+                buildStage.Text = error ?? "Done. Press Play.";
+                Busy(false);
+                if (error != null && !stopped)
+                    MessageBox.Show(this, error, Build.Name, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                else if (error == null)
+                    ShowPage(-1);
+            }));
+        });
+        worker.IsBackground = true;
+        worker.Start();
+    }
+
+    void Play()
+    {
+        if (building) { ShowPage(BuildPage); return; }
+        if (busy) return;
+        if (!File.Exists(Paths.Game)) { StartBuild(); return; }
         if (!DiscUsable()) { ShowPage(4); return; }
         int dropIn;
         if (HdTextures.Enabled && HdTextures.DropInChanged(out dropIn))

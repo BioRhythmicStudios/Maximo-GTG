@@ -6,17 +6,43 @@ disc. It uses static recompilation: the game's code is translated to C++ and com
 **This repository contains no game code or data, and no copy of the game.** You need your own legally obtained disc.
 Never share the `generated`, `build` or `dist` folders: they contain the game's code.
 
+## Get started
+
+1. Download `MaximoLauncher.zip` from the [Releases page](https://github.com/BioRhythmicStudios/Maximo-GTG/releases) and
+   unzip it to a folder with a short path, such as `C:\Games\Maximo`. Keep the `art` folder beside the launcher.
+2. Open `MaximoLauncher.exe` and press **Build**.
+3. Choose your disc image. The launcher checks it against the PAL release, opens it read-only and never changes it.
+4. When the build finishes, press **Play**.
+
+The launcher downloads what it needs: the source code, the libraries, FFmpeg for faster movies, and Git if your PC doesn't
+have it. If your PC has no C++ compiler, it offers to install Microsoft's free C++ Build Tools, and Windows will ask for your
+permission. The game itself is never downloaded: it is compiled on your PC from your own disc, which can take a while.
+
+## If Windows or your antivirus warns you
+
+The launcher is unsigned and new, so some security tools are cautious about it. Its source is in this repository, and it
+is built with the C# compiler that ships with Windows.
+
+- **SmartScreen** may say Windows protected your PC. Choose **More info**, then **Run anyway**, if you trust this download.
+- **Antivirus:** a few scanners may flag the launcher through general rules, because it downloads tools and starts a build.
+  Only download it from the Releases page above. If you are unsure, read the source or build it yourself.
+- **Smart App Control** blocks unsigned programs, so it stops the launcher, and probably the game built on your PC. Find it
+  under Windows Security, App & browser control. Read Microsoft's notes before you change it, because it may be hard to
+  turn back on. Your PC is your call: if you would rather keep it on, this port won't run for now.
+
 ## What you need
 
 - Windows 10 or 11, 64-bit, and a CPU with AVX2
 - A graphics card with Vulkan
-- [Git](https://git-scm.com/)
-- Visual Studio with the **Desktop development with C++** workload, including **C++ CMake tools for Windows**.
-  Visual Studio 2026 is the tested version; the free Community edition is fine.
-- A disc image of the PAL release of Maximo: Ghosts to Glory (`.iso`), or a folder with the disc's files
-- About 10 GB of free disk space, and a good while for the first build
+- A disc image of the PAL release of Maximo: Ghosts to Glory (`.iso`)
+- About 12 GB of free disk space, plus about 8 GB if the C++ Build Tools need installing
 
-## Build it
+To update the game, open **Game Files** and press **Update and rebuild the game**.
+
+## Build it by hand
+
+You need [Git](https://git-scm.com/) and Visual Studio with **Desktop development with C++**, including **C++ CMake tools
+for Windows**. Visual Studio 2026 is the tested version.
 
 ```bat
 git clone https://github.com/BioRhythmicStudios/Maximo-GTG.git
@@ -24,15 +50,7 @@ cd Maximo-GTG
 build.cmd "C:\path\to\your\Maximo.iso"
 ```
 
-The build downloads its source dependencies, then checks your disc against the PAL release. It opens the disc read-only
-and never changes it. When it finishes, open `dist\MaximoLauncher.exe` and choose your disc under **Game Files**. Then
-press **Play**.
-
-The build downloads an LGPL build of FFmpeg, which makes the movies faster. Add `--no-ffmpeg` to skip it; the game then
-uses its own movie decoder.
-
-The launcher is also offered as a download on the Releases page, but it can't play anything until you have built the
-game here. The game itself is never offered as a download.
+Then open `dist\MaximoLauncher.exe`. Add `--no-ffmpeg` to skip FFmpeg; the game then uses its own movie decoder.
 
 ## How it works
 

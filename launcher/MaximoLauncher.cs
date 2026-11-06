@@ -8,7 +8,7 @@
 // Built with the C# 5 compiler that ships with Windows (.NET Framework 4.8): see build.cmd.
 // Experimental build: the Picture setting adds the enhance branch's upscaling (MAXIMO_SSAA, PS2X_PRESENT_FILTER).
 // HD textures (experimental, HdTextures.cs): packs in .\textures, MAXIMO_HDTEX_PACKS for the game.
-// Hidden switches for automated testing: --setup <iso or folder>, --play <seconds>, --zip <notes>, --screenshot <png> [page],
+// Development builds only (build.cmd with MAXIMO_LAUNCHER_DEV=1): --setup <iso or folder>, --play <seconds>, --zip <notes>, --screenshot <png> [page],
 // --hdtex-install <zip or folder>, --hdtex-marcus, --hdtex-screenshot <png>. Results go to launcher.log.
 using System;
 using System.Collections.Generic;
@@ -17,10 +17,19 @@ using System.Drawing;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
+using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 using System.Windows.Forms;
+
+[assembly: AssemblyTitle("Maximo Launcher")]
+[assembly: AssemblyDescription("Launcher and builder for the unofficial Maximo PC port")]
+[assembly: AssemblyCompany("Biorhythmic Studios")]
+[assembly: AssemblyProduct("Maximo Launcher")]
+[assembly: AssemblyCopyright("Copyright (C) 2026 Biorhythmic Studios. GPL-3.0.")]
+[assembly: AssemblyVersion("1.0.0.0")]
+[assembly: AssemblyFileVersion("1.0.0.0")]
 
 static class Build
 {
@@ -36,6 +45,7 @@ static class Paths
 {
     public static readonly string Root = AppDomain.CurrentDomain.BaseDirectory.TrimEnd('\\');
     public static readonly string Game = Path.Combine(Root, "game\\maximo_boot.exe");
+    public static readonly string Art = Path.Combine(Root, "art");
     public static readonly string Disc = Path.Combine(Root, "disc");
     public static readonly string MemoryCard = Path.Combine(Root, "memcard\\mc0");
     public static readonly string Logs = Path.Combine(Root, "logs");
@@ -204,93 +214,157 @@ static class Setup
         return true;
     }
 
-    static string PowerShell(string script)
-    {
-        var info = new ProcessStartInfo("powershell.exe",
-            "-NoProfile -NonInteractive -Command \"" + script.Replace("\"", "\\\"") + "\"");
-        info.UseShellExecute = false;
-        info.CreateNoWindow = true;
-        info.RedirectStandardOutput = true;
-        info.RedirectStandardError = true;
-        using (var p = Process.Start(info))
-        {
-            string output = p.StandardOutput.ReadToEnd();
-            string error = p.StandardError.ReadToEnd();
-            p.WaitForExit();
-            if (p.ExitCode != 0)
-                throw new Exception("Windows could not open the disc image: " + error.Trim());
-            return output;
-        }
-    }
-
-    static string Quote(string path) { return "'" + path.Replace("'", "''") + "'"; }
-
-    // Copies a verified disc (an ISO, which Windows mounts read-only, or an extracted folder) into .\disc.
+    // Copies a verified disc (an ISO, which is only read, or an extracted folder) into .\disc.
     public static void Install(string source, Action<string> progress)
     {
         bool isIso = File.Exists(source) && source.EndsWith(".iso", StringComparison.OrdinalIgnoreCase);
-        bool mountedHere = false;
-        string root = source;
-        if (isIso)
-        {
-            progress("Opening the disc image...");
-            string output = PowerShell(
-                "$i = Get-DiskImage -ImagePath " + Quote(source) + "; $m = 0; " +
-                "if (-not $i.Attached) { $i = Mount-DiskImage -ImagePath " + Quote(source) + " -Access ReadOnly -PassThru; $m = 1 }; " +
-                "Start-Sleep -Milliseconds 500; 'MOUNTED=' + $m; 'DRIVE=' + ($i | Get-Volume).DriveLetter");
-            foreach (string line in output.Split('\n'))
-            {
-                string l = line.Trim();
-                if (l == "MOUNTED=1") mountedHere = true;
-                if (l.StartsWith("DRIVE=") && l.Length > 6) root = l.Substring(6) + ":\\";
-            }
-            if (root == source)
-                throw new Exception("Windows mounted the image but gave it no drive letter.");
-        }
-        else if (!Directory.Exists(source))
+        if (!isIso && !Directory.Exists(source))
             throw new Exception("Choose a .iso file or a folder with the extracted disc.");
-
-        try
+        progress("Opening the disc image...");
+        using (FileStream image = isIso ? new FileStream(source, FileMode.Open, FileAccess.Read, FileShare.Read) : null)
         {
-            string elf = Path.Combine(root, Build.ElfName);
-            if (!File.Exists(elf))
+            List<DiscFile> files = isIso ? Iso.Files(image) : DiscFile.InFolder(source);
+            DiscFile elf = files.FirstOrDefault(f => string.Equals(f.Relative, Build.ElfName, StringComparison.OrdinalIgnoreCase));
+            if (elf == null)
                 throw new Exception("This is not the PAL Maximo disc: " + Build.ElfName + " is missing. " +
                                     "This build needs Maximo: Ghosts to Glory, Europe (SLES-50703).");
             progress("Checking the disc...");
-            string hash = Sha256(elf);
-            Log.Write("disc source " + source + " (" + root + "), " + Build.ElfName + " sha256 " + hash);
+            string hash;
+            using (var sha = SHA256.Create())
+            {
+                using (var hashing = new CryptoStream(Stream.Null, sha, CryptoStreamMode.Write))
+                    elf.CopyTo(hashing);
+                hash = BitConverter.ToString(sha.Hash).Replace("-", "");
+            }
+            Log.Write("disc source " + source + ", " + Build.ElfName + " sha256 " + hash);
             if (!string.Equals(hash, Build.ElfSha256, StringComparison.OrdinalIgnoreCase))
                 throw new Exception("This disc's game executable does not match the PAL release (SLES-50703, v1.00). " +
                                     "Other versions are not supported by this build.");
 
-            string[] files = Directory.GetFiles(root, "*", SearchOption.AllDirectories);
             string temp = Paths.Disc + ".partial";
             if (Directory.Exists(temp)) Directory.Delete(temp, true);
-            long total = files.Sum(f => new FileInfo(f).Length), done = 0;
-            for (int i = 0; i < files.Length; ++i)
+            long total = files.Sum(f => f.Size), done = 0;
+            for (int i = 0; i < files.Count; ++i)
             {
-                string relative = files[i].Substring(root.Length).TrimStart('\\');
-                string target = Path.Combine(temp, relative);
+                string target = Path.Combine(temp, files[i].Relative);
                 Directory.CreateDirectory(Path.GetDirectoryName(target));
-                File.Copy(files[i], target, true);
-                File.SetAttributes(target, FileAttributes.Normal); // files copied from a disc are read-only
-                done += new FileInfo(target).Length;
-                progress("Copying game files: " + (100 * done / Math.Max(1, total)) + "% (" + (i + 1) + " of " + files.Length + ")");
+                using (var output = new FileStream(target, FileMode.Create, FileAccess.Write))
+                    files[i].CopyTo(output);
+                done += files[i].Size;
+                progress("Copying game files: " + (100 * done / Math.Max(1, total)) + "% (" + (i + 1) + " of " + files.Count + ")");
             }
             if (Directory.Exists(Paths.Disc)) Directory.Delete(Paths.Disc, true);
             Directory.Move(temp, Paths.Disc);
             string why;
             if (!DiscReady(out why))
                 throw new Exception(why);
-            Log.Write("disc installed: " + files.Length + " files, " + total + " bytes");
+            Log.Write("disc installed: " + files.Count + " files, " + total + " bytes");
         }
-        finally
+    }
+}
+
+// One file of the disc, from an extracted folder or from inside an ISO.
+class DiscFile
+{
+    public string Relative;
+    public long Size;
+    public Stream Image;   // the ISO, or null for a file on disk
+    public long Offset;    // where the file starts in the ISO
+    public string Path2;   // the file on disk
+
+    public static List<DiscFile> InFolder(string folder)
+    {
+        string root = Path.GetFullPath(folder);
+        return Directory.GetFiles(root, "*", SearchOption.AllDirectories)
+            .Select(f => new DiscFile { Relative = f.Substring(root.TrimEnd('\\').Length + 1), Size = new FileInfo(f).Length, Path2 = f })
+            .ToList();
+    }
+
+    public void CopyTo(Stream output)
+    {
+        if (Image == null)
         {
-            if (mountedHere)
+            using (var input = File.OpenRead(Path2))
+                input.CopyTo(output);
+            return;
+        }
+        Image.Position = Offset;
+        var buffer = new byte[1 << 20];
+        for (long left = Size; left > 0; )
+        {
+            int got = Image.Read(buffer, 0, (int)Math.Min(left, buffer.Length));
+            if (got <= 0)
+                throw new Exception("The disc image is shorter than it should be: " + Relative);
+            output.Write(buffer, 0, got);
+            left -= got;
+        }
+    }
+}
+
+// Lists the files of an ISO 9660 disc image. It only reads the image.
+static class Iso
+{
+    const int Sector = 2048;
+
+    public static List<DiscFile> Files(Stream image)
+    {
+        var header = new byte[Sector];
+        for (long sector = 16; ; ++sector)
+        {
+            Read(image, sector * Sector, header);
+            if (Encoding.ASCII.GetString(header, 1, 5) != "CD001" || header[0] == 255)
+                throw new Exception("This file is not a plain disc image (.iso).");
+            if (header[0] == 1)
+                break;
+        }
+        var files = new List<DiscFile>();
+        const int root = 156; // the root folder's record, inside the header
+        Folder(image, BitConverter.ToUInt32(header, root + 2), BitConverter.ToUInt32(header, root + 10), "", files, 0);
+        return files;
+    }
+
+    static void Folder(Stream image, long sector, long size, string prefix, List<DiscFile> files, int depth)
+    {
+        if (depth > 16 || size > 1 << 24)
+            throw new Exception("The disc image's folders are damaged.");
+        var data = new byte[size];
+        Read(image, sector * Sector, data);
+        for (int at = 0; at + 33 < data.Length; )
+        {
+            int length = data[at];
+            if (length == 0) // records do not cross sectors: the rest of this one is empty
             {
-                try { PowerShell("Dismount-DiskImage -ImagePath " + Quote(source) + " | Out-Null"); }
-                catch (Exception e) { Log.Write("dismount failed: " + e.Message); }
+                at = (at / Sector + 1) * Sector;
+                continue;
             }
+            int flags = data[at + 25], nameLength = data[at + 32];
+            long start = BitConverter.ToUInt32(data, at + 2), bytes = BitConverter.ToUInt32(data, at + 10);
+            string name = Encoding.ASCII.GetString(data, at + 33, nameLength);
+            at += length;
+            if (nameLength == 1 && name[0] < 2)
+                continue; // the "." and ".." records
+            if ((flags & 0x80) != 0)
+                throw new Exception("This disc image has a file in several parts, which is not supported.");
+            int version = name.IndexOf(';');
+            if (version >= 0) name = name.Substring(0, version);
+            name = name.TrimEnd('.');
+            if ((flags & 2) != 0)
+                Folder(image, start, bytes, prefix + name + "\\", files, depth + 1);
+            else
+                files.Add(new DiscFile { Relative = prefix + name, Size = bytes, Image = image, Offset = start * Sector });
+        }
+    }
+
+    static void Read(Stream image, long offset, byte[] data)
+    {
+        image.Position = offset;
+        int done = 0;
+        while (done < data.Length)
+        {
+            int got = image.Read(data, done, data.Length - done);
+            if (got <= 0)
+                throw new Exception("This file is not a plain disc image (.iso).");
+            done += got;
         }
     }
 }
@@ -494,6 +568,7 @@ static class Program
     static int Main(string[] args)
     {
         Picture.Load();
+#if DEV_SWITCHES
         try
         {
             if (args.Length == 2 && args[0] == "--setup")
@@ -542,6 +617,17 @@ static class Program
                 }
                 return 0;
             }
+            if (args.Length >= 1 && args[0] == "--build")
+            {
+                Builder.ForceOwnGit = args.Length > 1 && args[1] == "--own-git";
+                Builder.Run((text, percent) => { if (percent <= 0) Console.WriteLine("== " + text); }, Console.WriteLine);
+                return 0;
+            }
+            if (args.Length == 2 && args[0] == "--signed")
+            {
+                Console.WriteLine(Builder.SignedByMicrosoft(args[1]) ? "signed" : "not signed");
+                return 0;
+            }
             if (args.Length == 2 && args[0] == "--zip")
             {
                 Game.ZipLatest(args[1]);
@@ -558,6 +644,7 @@ static class Program
             Log.Write("error: " + e);
             return 1;
         }
+#endif
         Log.Write("launcher started, build " + Build.Version);
         Application.EnableVisualStyles();
         Application.Run(new LauncherForm());
