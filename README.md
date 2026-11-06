@@ -1,10 +1,10 @@
 # Maximo-GTG
 
+<img width="2559" height="1439" alt="github shot" src="https://github.com/user-attachments/assets/2f0f4e37-8f4a-40ad-8169-e8fdebcbb734" />
+
+
 An unofficial native Windows port of **Maximo: Ghosts to Glory** (PAL, SLES-50703), built on your own PC from your own
 disc. It uses static recompilation: the game's code is translated to C++ and compiled, with no emulator in between.
-
-![Uploading github shot.png…]()
-
 
 **This repository contains no game code or data, and no copy of the game.** You need your own legally obtained disc.
 Never share the `generated`, `build` or `dist` folders: they contain the game's code.
