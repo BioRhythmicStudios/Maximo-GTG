@@ -38,7 +38,7 @@ is built with the C# compiler that ships with Windows.
 - Windows 10 or 11, 64-bit, and a CPU with AVX2
 - A graphics card with Vulkan
 - A disc image of the PAL release of Maximo: Ghosts to Glory (`.iso`)
-- Fully compiled build is around 6GB of diskspace, the HD texture pack download (optional) is 9.7gb of disk space.
+- Fully compiled build is around 6GB of disk space, the HD texture pack download (optional) is 9.7gb of disk space.
 
 To update the game, open **Game Files** and press **Update and rebuild the game**.
 
