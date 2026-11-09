@@ -611,8 +611,8 @@ class LauncherForm : Form
                 iso = dialog.FileName;
             }
         }
-        string message = "This compiles the game on your PC from your own disc. It downloads the source code and libraries (about 2 GB) " +
-                         "and needs about 12 GB of disk space. It can take a while.";
+        string message = "This compiles the game on your PC from your own disc. It downloads the source code and libraries (under 1 GB) " +
+                         "and needs about 4 GB of disk space while it builds. Afterwards only the game (about 60 MB) stays. It can take a while.";
         if (Builder.NeedsCppTools)
             message += "\r\n\r\nYour PC also needs Microsoft's free C++ Build Tools, a further download of several GB that needs about 8 GB more. " +
                        "Windows will ask for your permission, and they are covered by Microsoft's licence terms.";

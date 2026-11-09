@@ -23,7 +23,7 @@ static class Builder
                                 "--add Microsoft.VisualStudio.Component.VC.CMake.Project";
     const int MaxRootLength = 100;
     const long GB = 1024L * 1024 * 1024;
-    const long BuildSpace = 12 * GB, CppToolsSpace = 8 * GB;
+    const long BuildSpace = 4 * GB, CppToolsSpace = 8 * GB;
 
     static readonly string Source = Path.Combine(Paths.Root, "source");
     static readonly string Tools = Path.Combine(Paths.Root, "tools");
@@ -146,6 +146,8 @@ static class Builder
             Directory.CreateDirectory(target);
             foreach (string file in Directory.GetFiles(built))
                 File.Copy(file, Path.Combine(target, Path.GetFileName(file)), true);
+            stage("Cleaning up", -1);
+            RemoveSource(gitFolder, output);
             output("Build finished.");
         }
     }
@@ -248,10 +250,11 @@ static class Builder
     static void FetchSource(string git, string gitFolder, Action<string, int> stage, Action<string> output)
     {
         const string longPaths = "-c core.longpaths=true "; // SPIRV-Cross test files exceed the Windows limit otherwise
+        // Shallow (latest version only, no history): about 0.9 GB less to download and store.
         stage("Downloading the source code", -1);
         if (Directory.Exists(Path.Combine(Source, ".git")))
         {
-            Tool(git, longPaths + "fetch origin main", Source, gitFolder, output);
+            Tool(git, longPaths + "fetch --depth 1 origin main", Source, gitFolder, output);
             Tool(git, longPaths + "reset --hard origin/main", Source, gitFolder, output);
         }
         else
@@ -259,11 +262,37 @@ static class Builder
             string cloning = Source + ".tmp";
             if (Directory.Exists(cloning))
                 RemoveFolder(cloning, gitFolder, output);
-            Tool(git, longPaths + "clone --progress \"" + SourceUrl + "\" \"" + cloning + "\"", Paths.Root, gitFolder, output);
+            Tool(git, longPaths + "clone --progress --depth 1 --single-branch --no-tags \"" + SourceUrl + "\" \"" + cloning + "\"",
+                 Paths.Root, gitFolder, output);
             Directory.Move(cloning, Source);
         }
         stage("Downloading the libraries", -1);
-        Tool(git, longPaths + "submodule update --init --recursive --force", Source, gitFolder, output);
+        try
+        {
+            Tool(git, longPaths + "submodule update --init --recursive --force --depth 1", Source, gitFolder, output);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception e)
+        {
+            // A server that won't send one commit on its own: fetch what is still missing with its history.
+            output("Shallow download of the libraries failed (" + e.Message + "); downloading the rest in full.");
+            Tool(git, longPaths + "submodule update --init --recursive --force", Source, gitFolder, output);
+        }
+    }
+
+    // Everything in .\source is only needed while building (the next build downloads it again), so it goes once the
+    // game is installed: about 3.5 GB. A failed or cancelled build keeps it, so Build can carry on from there.
+    static void RemoveSource(string gitFolder, Action<string> output)
+    {
+        try
+        {
+            RemoveFolder(Source, gitFolder, output);
+            output(Directory.Exists(Source) ? "Could not remove all of the source folder; it is safe to delete." : "Removed the source folder.");
+        }
+        catch (Exception e)
+        {
+            output("Could not remove the source folder (" + e.Message + "); it is safe to delete.");
+        }
     }
 
     // Directory.Delete fails on paths over the Windows limit, which a clone can have.
