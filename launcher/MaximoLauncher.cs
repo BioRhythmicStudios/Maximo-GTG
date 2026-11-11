@@ -28,8 +28,8 @@ using System.Windows.Forms;
 [assembly: AssemblyCompany("Biorhythmic Studios")]
 [assembly: AssemblyProduct("Maximo Launcher")]
 [assembly: AssemblyCopyright("Copyright (C) 2026 Biorhythmic Studios. GPL-3.0.")]
-[assembly: AssemblyVersion("1.1.0.0")]
-[assembly: AssemblyFileVersion("1.1.0.0")]
+[assembly: AssemblyVersion("1.0.2.0")]
+[assembly: AssemblyFileVersion("1.0.2.0")]
 
 static class Build
 {
