@@ -28,8 +28,8 @@ using System.Windows.Forms;
 [assembly: AssemblyCompany("Biorhythmic Studios")]
 [assembly: AssemblyProduct("Maximo Launcher")]
 [assembly: AssemblyCopyright("Copyright (C) 2026 Biorhythmic Studios. GPL-3.0.")]
-[assembly: AssemblyVersion("1.0.2.0")]
-[assembly: AssemblyFileVersion("1.0.2.0")]
+[assembly: AssemblyVersion("1.0.3.0")]
+[assembly: AssemblyFileVersion("1.0.3.0")]
 
 static class Build
 {
@@ -95,6 +95,17 @@ static class Picture
     public static readonly string[] FrameRateNames = { "50 Hz (original)", "60 Hz in gameplay (experimental)" };
     static readonly string[] FrameRateValues = { "50", "60" };
     public static int FrameRate = 0;
+    // Experimental free camera (MAXIMO_CAMERA=orbit): the right stick turns the camera around Maximo, R3 swings it back
+    // behind him. Speed in degrees per second at full stick (MAXIMO_CAMERA_SPEED), seconds without camera input before
+    // it swings back by itself (MAXIMO_CAMERA_RETURN, 0 = never), up/down inverted (MAXIMO_CAMERA_INVERT_Y). Off by default.
+    public static bool FreeCamera = false;
+    public static readonly string[] CameraSpeedNames = { "Slow", "Normal", "Fast", "Very fast" };
+    static readonly int[] CameraSpeedValues = { 90, 150, 220, 300 };
+    public static int CameraSpeed = 1;
+    public static readonly string[] CameraReturnNames = { "Never", "After 2 seconds", "After 3 seconds", "After 5 seconds", "After 8 seconds" };
+    static readonly int[] CameraReturnValues = { 0, 2, 3, 5, 8 };
+    public static int CameraReturn = 2;
+    public static bool CameraInvertY = false;
     static string File_ { get { return Path.Combine(Paths.Root, "settings.ini"); } }
 
     public static void Load()
@@ -117,6 +128,12 @@ static class Picture
                 if (kv[0].Trim() == "vsync") VSync = kv[1].Trim() != "0";
                 if (kv[0].Trim() == "aspect") Aspect = Math.Max(0, Array.IndexOf(AspectValues, kv[1].Trim()));
                 if (kv[0].Trim() == "framerate") FrameRate = Math.Max(0, Array.IndexOf(FrameRateValues, kv[1].Trim()));
+                if (kv[0].Trim() == "camera") FreeCamera = kv[1].Trim() == "1";
+                if (kv[0].Trim() == "cameraspeed" && int.TryParse(kv[1].Trim(), out n) && Array.IndexOf(CameraSpeedValues, n) >= 0)
+                    CameraSpeed = Array.IndexOf(CameraSpeedValues, n);
+                if (kv[0].Trim() == "camerareturn" && int.TryParse(kv[1].Trim(), out n) && Array.IndexOf(CameraReturnValues, n) >= 0)
+                    CameraReturn = Array.IndexOf(CameraReturnValues, n);
+                if (kv[0].Trim() == "camerainvert") CameraInvertY = kv[1].Trim() == "1";
                 HdTextures.Load(kv[0].Trim(), kv[1].Trim());
             }
         }
@@ -132,7 +149,11 @@ static class Picture
                                         "\r\nsoftfx=" + (SoftParticles ? 1 : 0) +
                                         "\r\nvsync=" + (VSync ? 1 : 0) +
                                         "\r\naspect=" + AspectValues[Aspect] +
-                                        "\r\nframerate=" + FrameRateValues[FrameRate] + "\r\n" + HdTextures.SaveLines()); }
+                                        "\r\nframerate=" + FrameRateValues[FrameRate] +
+                                        "\r\ncamera=" + (FreeCamera ? 1 : 0) +
+                                        "\r\ncameraspeed=" + CameraSpeedValues[CameraSpeed] +
+                                        "\r\ncamerareturn=" + CameraReturnValues[CameraReturn] +
+                                        "\r\ncamerainvert=" + (CameraInvertY ? 1 : 0) + "\r\n" + HdTextures.SaveLines()); }
         catch (IOException) { }
     }
 
@@ -141,7 +162,10 @@ static class Picture
         return (Ssaa[Mode] == null ? "original resolution" : (Mode >= 4 ? "4x resolution, " : "2x resolution, ") + Ssaa[Mode] + "x SSAA" + (Mode == 5 ? ", SMAA" : "")) +
                (Fsr ? ", FSR scaling" : Smooth ? ", smooth scaling" : ", sharp scaling") + (Vu1Thread ? ", 3D on a second CPU core" + (Vu1Pipeline ? " with overlapped frames" : "") : "") +
                (Borderless ? ", borderless fullscreen" : "") + (SoftParticles && Ssaa[Mode] != null ? ", smooth effects" : "") + (VSync ? ", VSync" : "") + (Aspect == 1 ? ", 16:9 widescreen" : "") +
-               (FrameRate == 1 ? ", 60 Hz gameplay" : "") + HdTextures.Describe();
+               (FrameRate == 1 ? ", 60 Hz gameplay" : "") +
+               (FreeCamera ? ", free camera (" + CameraSpeedNames[CameraSpeed].ToLowerInvariant() + ", back " +
+                             (CameraReturnValues[CameraReturn] == 0 ? "never" : "after " + CameraReturnValues[CameraReturn] + " s") +
+                             (CameraInvertY ? ", inverted" : "") + ")" : "") + HdTextures.Describe();
     }
 
     // The settings of the developer's play_enhanced.cmd; a value already in the environment wins.
@@ -172,6 +196,13 @@ static class Picture
             info.EnvironmentVariables["MAXIMO_ASPECT"] = "16:9";
         if (FrameRate == 1 && string.IsNullOrEmpty(Environment.GetEnvironmentVariable("MAXIMO_FRAME_RATE")))
             info.EnvironmentVariables["MAXIMO_FRAME_RATE"] = "60";
+        if (FreeCamera && string.IsNullOrEmpty(Environment.GetEnvironmentVariable("MAXIMO_CAMERA")))
+        {
+            info.EnvironmentVariables["MAXIMO_CAMERA"] = "orbit";
+            info.EnvironmentVariables["MAXIMO_CAMERA_SPEED"] = CameraSpeedValues[CameraSpeed].ToString();
+            info.EnvironmentVariables["MAXIMO_CAMERA_RETURN"] = CameraReturnValues[CameraReturn].ToString();
+            info.EnvironmentVariables["MAXIMO_CAMERA_INVERT_Y"] = CameraInvertY ? "1" : "0";
+        }
         string packs = HdTextures.PackList();
         if (packs.Length > 0 && string.IsNullOrEmpty(Environment.GetEnvironmentVariable("MAXIMO_HDTEX_PACKS")))
             info.EnvironmentVariables["MAXIMO_HDTEX_PACKS"] = packs;

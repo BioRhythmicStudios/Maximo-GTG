@@ -73,6 +73,8 @@ Then open `dist\MaximoLauncher.exe`. Add `--no-ffmpeg` to skip FFmpeg; the game 
 | X or Space, C, Z, V | Cross, Circle, Square, Triangle |
 | Q, E, Left Shift, Right Shift | L1, R1, L2, R2 |
 | Enter, Tab | Start, Select |
+| I, J, K, L | Turn the free camera (right stick) |
+| R | R3: free camera back behind Maximo |
 | F12 | Screenshot for the launcher's banner |
 | Alt+Enter | Fullscreen or window |
 | Esc | Quit |
@@ -84,7 +86,7 @@ screenshots, on your PC only.
 ### Changing the controls
 
 Open **Controls** in the launcher and press **Change controls...** to set two keys and a controller button for each PS2
-button. You can also bind keys or buttons that push the left stick fully. Esc, F12 and Alt+Enter stay with the game
+button. You can also bind keys or buttons that push the left stick fully, or the right stick (the free camera). Esc, F12 and Alt+Enter stay with the game
 window.
 
 The launcher saves your choice in `controls.ini` beside it, and the game reads that file itself. With an older launcher
@@ -99,7 +101,8 @@ cross = SOUTH
 ```
 
 Each line is one PS2 button (`up down left right cross circle square triangle l1 r1 l2 r2 l3 r3 start select`) or a full
-left-stick push (`stick_up stick_down stick_left stick_right`). Keys use their position on a US keyboard (`A`, `1`,
+left-stick push (`stick_up stick_down stick_left stick_right`) or right-stick push (`camera_up camera_down camera_left
+camera_right`). Keys use their position on a US keyboard (`A`, `1`,
 `SPACE`, `LEFT_SHIFT`, `KP_0`, `F1`...). Controller buttons are `SOUTH EAST WEST NORTH` (by position), `DPAD_UP`,
 `DPAD_DOWN`, `DPAD_LEFT`, `DPAD_RIGHT`, `L1 R1 L2 R2 L3 R3`, `START` and `SELECT`. Lines you leave out keep their
 defaults. Delete the file to go back to the defaults.

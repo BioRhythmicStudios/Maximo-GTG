@@ -23,30 +23,33 @@ static class Bindings
     {
         "up", "down", "left", "right", "cross", "circle", "square", "triangle",
         "l1", "r1", "l2", "r2", "l3", "r3", "start", "select",
-        "stick_up", "stick_down", "stick_left", "stick_right"
+        "stick_up", "stick_down", "stick_left", "stick_right",
+        "camera_up", "camera_down", "camera_left", "camera_right"
     };
     public static readonly string[] Labels =
     {
         "D-pad up", "D-pad down", "D-pad left", "D-pad right",
         "Cross  ✕", "Circle  ○", "Square  □", "Triangle  △",
         "L1", "R1", "L2", "R2", "L3 (press left stick)", "R3 (press right stick)", "Start", "Select",
-        "Left stick up", "Left stick down", "Left stick left", "Left stick right"
+        "Left stick up", "Left stick down", "Left stick left", "Left stick right",
+        "Camera up", "Camera down", "Camera left", "Camera right"
     };
-    public const int StickFirst = 16;
+    public const int StickFirst = 16, CameraFirst = 20;
 
     // Defaults: the game's own (kDefaultKeys / kDefaultPad in ps2_pad.cpp).
     static readonly string[][] DefaultKeys =
     {
         new[] { "UP", "W" }, new[] { "DOWN", "S" }, new[] { "LEFT", "A" }, new[] { "RIGHT", "D" },
         new[] { "X", "SPACE" }, new[] { "C" }, new[] { "Z", "KP_0" }, new[] { "V", "KP_1" },
-        new[] { "Q" }, new[] { "E" }, new[] { "LEFT_SHIFT" }, new[] { "RIGHT_SHIFT" }, new string[0], new string[0],
+        new[] { "Q" }, new[] { "E" }, new[] { "LEFT_SHIFT" }, new[] { "RIGHT_SHIFT" }, new string[0], new[] { "R" },
         new[] { "ENTER" }, new[] { "TAB" },
-        new string[0], new string[0], new string[0], new string[0]
+        new string[0], new string[0], new string[0], new string[0],
+        new[] { "I" }, new[] { "K" }, new[] { "J" }, new[] { "L" }
     };
     static readonly string[] DefaultPad =
     {
         "DPAD_UP", "DPAD_DOWN", "DPAD_LEFT", "DPAD_RIGHT", "SOUTH", "EAST", "WEST", "NORTH",
-        "L1", "R1", "L2", "R2", "L3", "R3", "START", "SELECT", "", "", "", ""
+        "L1", "R1", "L2", "R2", "L3", "R3", "START", "SELECT", "", "", "", "", "", "", "", ""
     };
 
     // Controller choices: game name, then what the player sees.
@@ -105,7 +108,8 @@ static class Bindings
         var s = new StringBuilder();
         s.Append("; Maximo controls, written by the launcher (Controls page). The game reads this file itself.\r\n");
         s.Append("; Key names are by position on a US keyboard; controller names: SOUTH EAST WEST NORTH, DPAD_UP...,\r\n");
-        s.Append("; L1 R1 L2 R2 L3 R3, START, SELECT. stick_ lines push the left stick fully. Delete this file for the defaults.\r\n");
+        s.Append("; L1 R1 L2 R2 L3 R3, START, SELECT. stick_ lines push the left stick fully,\r\n");
+        s.Append("; camera_ lines the right stick (turns the free camera). Delete this file for the defaults.\r\n");
         s.Append("[keyboard]\r\n");
         for (int a = 0; a < Actions.Length; a++) s.Append(Actions[a] + " = " + string.Join(", ", Keys[a]) + "\r\n");
         s.Append("[controller]\r\n");
@@ -218,6 +222,9 @@ static class Bindings
         parts.Add("Move: " + string.Join(" ", new[] { 0, 2, 1, 3 }.Select(a => Keys[a].Length > 0 ? KeyLabel(Keys[a].Last()) : "-")));
         foreach (int a in shown.Skip(1))
             parts.Add(Labels[a].Split(' ')[0] + ": " + KeysLabel(a));
+        parts.Add("Camera: " + string.Join(" ", new[] { CameraFirst, CameraFirst + 2, CameraFirst + 1, CameraFirst + 3 }
+                                                   .Select(a => Keys[a].Length > 0 ? KeyLabel(Keys[a][0]) : "-")) +
+                  ", back: " + KeysLabel(13));
         return string.Join("     ", parts);
     }
 }
@@ -262,6 +269,13 @@ class ControlsForm : Form
                 y += 6;
                 Controls.Add(new Label { Text = "Left stick, pushed fully (for running with keys or buttons)", ForeColor = LauncherForm.Gold,
                                       Location = new Point(LabelX, y), AutoSize = true });
+                y += 24;
+            }
+            if (a == Bindings.CameraFirst)
+            {
+                y += 6;
+                Controls.Add(new Label { Text = "Right stick, pushed fully (turns the free camera; R3 swings it back behind Maximo)",
+                                      ForeColor = LauncherForm.Gold, Location = new Point(LabelX, y), AutoSize = true });
                 y += 24;
             }
             Controls.Add(new Label { Text = Bindings.Labels[a], Location = new Point(LabelX, y + 4), Size = new Size(Key1X - LabelX - 8, 22) });

@@ -1480,13 +1480,60 @@ namespace
     //   it is above 0 the frame only takes 1.2 off it, otherwise the frame adds 2.0 and moves the shake one step. That
     //   is a step on 1.2 / 3.2 of the frames, 18.75 per second at 50 Hz. At 60 Hz the frame takes 10/11 instead, a
     //   step on (10/11) / (32/11) = 5/16 of the frames: 18.75 per second again, so the shake lasts as long.
+    // - Style 1 (the checkpoint slam) is a scripted move instead: while +0x640 is set, func_140530 walks a table at
+    //   +0x2C of 20-byte segments {dx, dy, dz, frames, scale}. Starting a segment (+0x0 set) sets the per-frame move
+    //   +0x10..+0x18 = d * scale / frames and the counter +0x20 = frames; each frame with the counter above 0 takes 1
+    //   off it and adds the move to the eye (+0x1A0) and target (+0x1D0). The update builds the eye on the previous
+    //   frame's eye (+0x220), so the moves add up. At 60 Hz each frame moves 5/6 of the step and takes 5/6 off the
+    //   counter: the same distance in the same time. (A segment's first frame is set up inside the call, so its sixth
+    //   is given back on the next frame.)
     constexpr uint32_t kCameraShakeFn = 0x001406C0u;
     constexpr uint32_t kShakeThrottleAddr = 0x00239034u; // gp-0x773C
     uint64_t g_shakeFrames = 0;
+    float g_slamCounterOwed = 0.0f;
+    void slamShakePace(uint8_t *rdram, uint32_t cam)
+    {
+        auto rf = [&](uint32_t a) { float v; std::memcpy(&v, rdram + a, sizeof(v)); return v; };
+        auto wf = [&](uint32_t a, float v) { std::memcpy(rdram + a, &v, sizeof(v)); };
+        float move[3];
+        if (rdram[cam] != 0) // a segment starts in this call: work out its move the way func_140530 does
+        {
+            const uint32_t seg = (rd32(cam + 0x2C) + rd32(cam + 0x24) * 20u) & 0x01FFFFFFu;
+            if (seg + 20u > PS2_RAM_SIZE)
+                return;
+            for (int i = 0; i < 3; ++i)
+                move[i] = rf(seg + 4u * i) * rf(seg + 0x10u) / rf(seg + 0xCu);
+            g_slamCounterOwed = 1.0f / 6.0f;
+        }
+        else
+        {
+            const float counter = rf(cam + 0x20);
+            if (!(counter > 0.0f))
+                return;
+            for (int i = 0; i < 3; ++i)
+                move[i] = rf(cam + 0x10 + 4u * i);
+            wf(cam + 0x20, counter + 1.0f / 6.0f + g_slamCounterOwed);
+            g_slamCounterOwed = 0.0f;
+        }
+        for (int i = 0; i < 3; ++i)
+        {
+            if (!std::isfinite(move[i]))
+                return;
+        }
+        for (int i = 0; i < 3; ++i)
+        {
+            wf(cam + 0x1A0 + 4u * i, rf(cam + 0x1A0 + 4u * i) - move[i] / 6.0f);
+            wf(cam + 0x1D0 + 4u * i, rf(cam + 0x1D0 + 4u * i) - move[i] / 6.0f);
+        }
+        ++g_shakeFrames;
+    }
+
     void cameraShakeEntry(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
         const uint32_t cam = reg(ctx, 4);
-        if (g_fieldRateHz == 60 && cam && rd32(cam + 0x28) == 0)
+        if (g_fieldRateHz == 60 && cam && rd32(cam + 0x28) == 1 && rdram[cam + 0x640] != 0)
+            slamShakePace(rdram, cam);
+        else if (g_fieldRateHz == 60 && cam && rd32(cam + 0x28) == 0)
         {
             const bool shaking = rdram[cam + 0x640] != 0;
             const uint32_t addr = shaking ? kShakeThrottleAddr : cam + 0x610u;
@@ -1497,6 +1544,410 @@ namespace
                 t += shaking ? 1.2f - 10.0f / 11.0f : 1.0f / 6.0f;
                 std::memcpy(rdram + addr, &t, sizeof(t));
                 ++g_shakeFrames;
+            }
+        }
+        g_original[slotOf(ctx->pc)](rdram, ctx, runtime);
+    }
+
+    // ---- camera probe and free camera (x-camera) ----------------------------------------------------------------------
+    // func_13D020 is the camera update, called once per frame from func_1221F0 with the camera object (0x239890). It
+    // starts by copying +0x1A0 to +0x220: +0x1A0 is the eye, +0x1D0 the look-at target, +0x1F0 the followed point
+    // (Maximo); y is up. The update often returns to the run loop part way: its line-of-sight query (func_153170)
+    // jumps into another recompiled piece (0x1530F4), and the run loop then finishes the update without returning
+    // through a hook (an EE checkpoint can do the same). So nothing is done after it returns. Instead the change is made on entry to func_13C8B0(cam), which the
+    // update calls at the end of each camera branch to build the view matrix (+0xA0, via func_13C6C0) from the eye and
+    // target and to copy the eye to +0x1B0; the update's own entry puts the game's eye back first. func_1483C0, the
+    // level loop's next call (0x1222EC), ends the frame's update. So the change is draw-only for the game's camera
+    // logic, while everything after the matrix (Maximo's camera-relative movement included) sees the turned view.
+    // MAXIMO_CAMERA_LOG=1 logs the vectors twice a second and camera type changes. MAXIMO_CAMERA_TEST=<deg>[,x|y|z]
+    // turns the eye around the target by that angle (probe).
+    constexpr uint32_t kCameraUpdateFn = 0x0013D020u;
+    constexpr uint32_t kCameraApplyFn = 0x001483C0u; // the level loop's next call: the frame's update is over
+    constexpr uint32_t kCameraViewFn = 0x0013C8B0u;  // (cam): view matrix from the eye and target
+    constexpr uint32_t kLineOfSightFn = 0x00153640u; // (from, to): 1 and `to` moved to the hit when blocked
+    bool g_camLog = false;
+    float g_camTestDeg = 0.0f;
+    int g_camTestAxis = 1;
+    bool g_camSaved = false;
+    uint32_t g_camObj = 0;
+    uint32_t g_camPending = 0; // camera object of the update in progress (until func_1483C0)
+    bool g_camAppliedThisUpdate = false;
+    float g_camSavedEye[4]{};
+    uint64_t g_camCalls = 0;
+
+    void camVec(uint32_t addr, float *v) { std::memcpy(v, mem(addr), 16); }
+
+    // ---- free camera (MAXIMO_CAMERA=orbit) ---------------------------------------------------------------------------
+    // The right stick orbits the eye around the game's look-at target: left/right turns (yaw about y), up/down tilts
+    // (pitch, kept between kPitchMin and kPitchMax). Until the stick is first moved the game's own camera shows
+    // unchanged. Then the view direction is the player's (the game's camera keeps chasing behind Maximo underneath; only
+    // its distance to the target is used). Turning speeds up and slows down smoothly (kTurnSmoothing) and small stick
+    // moves turn slowly (response curve). After kReturnDelay seconds without camera input the view swings back to the
+    // game's (behind Maximo) on a soft critically damped spring; R3 does the same at once on a stiffer one. The game's
+    // own line-of-sight query (func_153640, called from the hook with EE checkpoints held) keeps the eye in front of
+    // walls: the camera pulls in at once and eases back out when the way is clear.
+    // It only acts on the follow camera (+0x248 type 0) in normal play: any other camera type (scripted shots, level-
+    // start views), the attract demo (fixed-step mode 0x238FD4 > 0) or a jump of the followed point (level start,
+    // respawn, teleport) cuts straight back to the game's camera. While the game is paused the camera holds.
+    // MAXIMO_CAMERA_SPEED = turn speed in degrees per second at full stick (default 150; tilting runs at 60% of it).
+    // Stick up looks up (the eye goes down), as in most current games; MAXIMO_CAMERA_INVERT_Y=1 flips that.
+    // MAXIMO_CAMERA_RETURN = seconds without camera input before the view swings back (default 3, 0 = never).
+    enum class OrbitMode
+    {
+        Game,      // the game's camera, untouched
+        Player,    // the player's view direction
+        Returning, // swinging back to the game's
+    };
+    struct OrbitState
+    {
+        bool on = false;
+        bool invertY = false;
+        float speed = 150.0f * 3.14159265f / 180.0f; // radians per second at full stick
+        float returnDelay = 3.0f;
+        OrbitMode mode = OrbitMode::Game;
+        bool fastReturn = false;
+        float yaw = 0.0f, pitch = 0.0f;       // the view shown (eye around the target)
+        float yawVel = 0.0f, pitchVel = 0.0f; // radians per second
+        float idle = 0.0f;                    // seconds without camera input
+        float shownDist = 0.0f;               // eye distance shown (pulled in by walls)
+        float lift = 0.0f;                    // extra pitch while pulled in (looks down over Maximo)
+        uint32_t lastFrame = 0;
+        int sameFrame = 0;
+        float lastFollow[3]{};
+        bool haveFollow = false;
+        // right stick and R3 from the last scePadRead (analog mode only), written by scriptedPadRead
+        uint8_t rx = 0x80, ry = 0x80;
+        bool r3 = false, r3Was = false;
+        uint64_t takes = 0, wallHits = 0, losCalls = 0, losFailures = 0;
+    };
+    OrbitState g_orbit;
+    constexpr float kPitchMin = -0.17f;      // ~-10 degrees: a little below the target
+    constexpr float kPitchMax = 1.22f;       // ~70 degrees: high above
+    constexpr float kStickDeadZone = 0.18f;
+    constexpr float kTurnSmoothing = 0.08f;  // seconds: time constant of the turn speed following the stick
+    constexpr float kReturnSpringSlow = 2.2f; // rad/s: the spring after kReturnDelay (settles in ~2 s)
+    constexpr float kReturnSpringFast = 7.0f; // rad/s: the spring after R3 (~0.6 s)
+    constexpr float kWallMargin = 0.6f;      // eye kept this far in front of a wall hit
+    constexpr float kMinDist = 1.2f;
+    constexpr float kWallEaseOut = 0.35f;    // seconds: time constant of moving back out from a wall
+    constexpr float kWallLift = 0.7f;        // radians (~40 degrees) of extra pitch when pulled all the way in
+    constexpr float kLiftSmoothing = 0.15f;  // seconds
+    constexpr uint32_t kGameFrameCounterAddr = 0x0025B9E0u;
+    constexpr uint32_t kFrameDeltaAddr = 0x0025B9F0u; // this frame's step in 1/60 s
+
+    float orbitStick(uint8_t b)
+    {
+        const float v = std::clamp((static_cast<int>(b) - 128) / 127.0f, -1.0f, 1.0f);
+        const float a = std::fabs(v);
+        if (a < kStickDeadZone)
+            return 0.0f;
+        const float t = (a - kStickDeadZone) / (1.0f - kStickDeadZone);
+        return std::copysign(t * (0.35f + 0.65f * t), v); // gentle near the centre, full at the edge
+    }
+
+    float wrapAngle(float a)
+    {
+        constexpr float kPi = 3.14159265f;
+        while (a > kPi)
+            a -= 2.0f * kPi;
+        while (a < -kPi)
+            a += 2.0f * kPi;
+        return a;
+    }
+
+    void orbitSetMode(OrbitMode mode, const char *why)
+    {
+        if (mode == g_orbit.mode)
+            return;
+        if (g_camLog || g_orbit.on)
+            logf("camera orbit: %s -> %s (%s) at frame %llu",
+                 g_orbit.mode == OrbitMode::Game ? "game" : g_orbit.mode == OrbitMode::Player ? "player" : "returning",
+                 mode == OrbitMode::Game ? "game" : mode == OrbitMode::Player ? "player" : "returning", why,
+                 static_cast<unsigned long long>(g_guestFrame.load()));
+        g_orbit.mode = mode;
+    }
+
+    extern "C" void ps2xHoldEeCheckpoints(int hold);
+
+    // The game's line-of-sight query from the host: func_153640(from, to) on vectors below the guest stack, with EE
+    // checkpoints held (nothing would resume it if one stopped it) and every register put back afterwards.
+    bool guestLineOfSight(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime, const float *from, float *to)
+    {
+        static R5900Context saved;
+        saved = *ctx;
+        const uint32_t sp = (GPR_U32(ctx, 29) - 0x400u) & ~0xFu;
+        const uint32_t a = sp + 0x10u, b = sp + 0x20u;
+        constexpr uint32_t kReturnMark = 0x00100004u;
+        std::memcpy(mem(a), from, 16);
+        std::memcpy(mem(b), to, 16);
+        SET_GPR_U32(ctx, 29, sp);
+        SET_GPR_U32(ctx, 4, a);
+        SET_GPR_U32(ctx, 5, b);
+        SET_GPR_U32(ctx, 31, kReturnMark);
+        ctx->pc = kLineOfSightFn;
+        ps2xHoldEeCheckpoints(1);
+        // Like the run loop: a jump into another recompiled piece returns with $pc there, so dispatch until the call
+        // reaches its return mark.
+        for (int steps = 0; steps < 100000 && ctx->pc != kReturnMark && ctx->pc != 0u; ++steps)
+        {
+            const uint32_t pc = ctx->pc;
+            if (!runtime->hasFunction(pc))
+                break;
+            runtime->lookupFunction(pc)(rdram, ctx, runtime);
+        }
+        ps2xHoldEeCheckpoints(-1);
+        const bool ok = ctx->pc == kReturnMark;
+        const bool hit = ok && GPR_U32(ctx, 2) != 0;
+        if (hit)
+            std::memcpy(to, mem(b), 16);
+        ++g_orbit.losCalls;
+        if (!ok && ++g_orbit.losFailures <= 4)
+            logf("camera orbit: line-of-sight call ended at pc %06X, not the return mark", ctx->pc);
+        *ctx = saved;
+        return hit;
+    }
+
+    // Once per frame (first view-matrix build of the update). A later build in the same update only places the eye
+    // again from the same state (placeOnly).
+    void orbitCamera(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime, uint32_t cam, bool placeOnly)
+    {
+        OrbitState &o = g_orbit;
+        float eye[4], tgt[4], fol[4];
+        camVec(cam + 0x1A0, eye);
+        camVec(cam + 0x1D0, tgt);
+        camVec(cam + 0x1F0, fol);
+        if (placeOnly)
+        {
+            if (o.mode == OrbitMode::Game || o.shownDist <= 0.0f)
+                return;
+            float out[4];
+            std::memcpy(out, eye, 16);
+            const float p = std::min(o.pitch + o.lift, kPitchMax);
+            out[0] = tgt[0] + std::cos(p) * std::sin(o.yaw) * o.shownDist;
+            out[1] = tgt[1] + std::sin(p) * o.shownDist;
+            out[2] = tgt[2] + std::cos(p) * std::cos(o.yaw) * o.shownDist;
+            if (!g_camSaved)
+                std::memcpy(g_camSavedEye, eye, 16);
+            g_camSaved = true;
+            g_camObj = cam;
+            std::memcpy(mem(cam + 0x1A0), out, 16);
+            return;
+        }
+        const bool r3Edge = o.r3 && !o.r3Was;
+        o.r3Was = o.r3;
+        // Eligibility: the follow camera in normal play, no jump of the followed point.
+        const float jx = fol[0] - o.lastFollow[0], jy = fol[1] - o.lastFollow[1], jz = fol[2] - o.lastFollow[2];
+        const bool jumped = o.haveFollow && jx * jx + jy * jy + jz * jz > 20.0f * 20.0f;
+        std::memcpy(o.lastFollow, fol, sizeof o.lastFollow);
+        o.haveFollow = true;
+        const uint32_t type = rd32(cam + 0x248);
+        // (+0x28 is not a camera mode: func_13C660 starts a shake and stores the shake's style there, e.g. 1 for the
+        // checkpoint slam, and it stays set after the shake.)
+        if (type != 0 || static_cast<int32_t>(rd32(kFixedStepModeAddr)) > 0 || jumped)
+        {
+            orbitSetMode(OrbitMode::Game, type != 0 ? "scripted camera" : jumped ? "followed point jumped" : "attract demo");
+            o.yawVel = o.pitchVel = 0.0f;
+            return;
+        }
+        // The game's own view, as yaw/pitch/distance of the eye around the target.
+        const float dx = eye[0] - tgt[0], dy = eye[1] - tgt[1], dz = eye[2] - tgt[2];
+        const float flat = std::sqrt(dx * dx + dz * dz), dist = std::sqrt(dx * dx + dy * dy + dz * dz);
+        if (dist < 0.01f)
+            return;
+        const float gameYaw = std::atan2(dx, dz), gamePitch = std::atan2(dy, flat);
+        // Time: the game's frame step (1/60 s units). Paused = the game frame counter held for two calls running (at
+        // 60 Hz the frame-rate code holds it for one frame in six, which is not a pause).
+        const uint32_t frame = rd32(kGameFrameCounterAddr);
+        o.sameFrame = frame == o.lastFrame ? o.sameFrame + 1 : 0;
+        o.lastFrame = frame;
+        float stepDt;
+        std::memcpy(&stepDt, mem(kFrameDeltaAddr), 4);
+        const float dt = o.sameFrame >= 2 || !(stepDt > 0.0f && stepDt < 10.0f) ? 0.0f : stepDt / 60.0f;
+
+        const float sx = orbitStick(o.rx), sy = orbitStick(o.ry) * (o.invertY ? -1.0f : 1.0f);
+        const bool input = sx != 0.0f || sy != 0.0f;
+        if (o.mode == OrbitMode::Game)
+        {
+            o.yaw = gameYaw;
+            o.pitch = gamePitch;
+            o.shownDist = dist;
+            o.lift = 0.0f;
+        }
+        if (input && dt > 0.0f)
+        {
+            if (o.mode == OrbitMode::Game)
+                ++o.takes;
+            orbitSetMode(OrbitMode::Player, "right stick");
+            o.idle = 0.0f;
+        }
+        else if (r3Edge && o.mode != OrbitMode::Game)
+        {
+            o.fastReturn = true;
+            orbitSetMode(OrbitMode::Returning, "R3");
+        }
+        else if (o.mode == OrbitMode::Player && dt > 0.0f)
+        {
+            o.idle += dt;
+            if (o.returnDelay > 0.0f && o.idle >= o.returnDelay)
+            {
+                o.fastReturn = false;
+                orbitSetMode(OrbitMode::Returning, "no camera input");
+            }
+        }
+        if (o.mode == OrbitMode::Game)
+            return;
+
+        if (dt > 0.0f)
+        {
+            if (o.mode == OrbitMode::Player)
+            {
+                // Turn speed eases toward the stick's.
+                const float k = 1.0f - std::exp(-dt / kTurnSmoothing);
+                o.yawVel += (-sx * o.speed - o.yawVel) * k;
+                o.pitchVel += (sy * o.speed * 0.6f - o.pitchVel) * k;
+            }
+            else
+            {
+                // Critically damped spring toward the game's view.
+                const float w = o.fastReturn ? kReturnSpringFast : kReturnSpringSlow;
+                const float ey = wrapAngle(gameYaw - o.yaw), ep = gamePitch - o.pitch;
+                o.yawVel += (w * w * ey - 2.0f * w * o.yawVel) * dt;
+                o.pitchVel += (w * w * ep - 2.0f * w * o.pitchVel) * dt;
+                if (std::fabs(ey) < 0.01f && std::fabs(ep) < 0.01f && std::fabs(o.yawVel) < 0.05f &&
+                    std::fabs(o.pitchVel) < 0.05f)
+                {
+                    orbitSetMode(OrbitMode::Game, "back behind Maximo");
+                    o.yawVel = o.pitchVel = 0.0f;
+                    return;
+                }
+            }
+            o.yaw = wrapAngle(o.yaw + o.yawVel * dt);
+            o.pitch += o.pitchVel * dt;
+            if (o.pitch < kPitchMin || o.pitch > kPitchMax)
+            {
+                o.pitch = std::clamp(o.pitch, kPitchMin, kPitchMax);
+                o.pitchVel = 0.0f;
+            }
+        }
+        // Pulled in by a wall: tilt up toward kWallLift so the view looks down over Maximo instead of into him.
+        if (dt > 0.0f)
+        {
+            const float pulled = std::clamp(1.0f - (o.shownDist - kMinDist) / std::max(0.01f, dist - kMinDist), 0.0f, 1.0f);
+            o.lift += (pulled * kWallLift - o.lift) * (1.0f - std::exp(-dt / kLiftSmoothing));
+        }
+        const float shownPitch = std::min(o.pitch + o.lift, kPitchMax);
+        const float dir[3] = {std::cos(shownPitch) * std::sin(o.yaw), std::sin(shownPitch),
+                              std::cos(shownPitch) * std::cos(o.yaw)};
+        // Walls: the game's line of sight from the target to where the eye would be.
+        float want[4] = {tgt[0] + dir[0] * dist, tgt[1] + dir[1] * dist, tgt[2] + dir[2] * dist, eye[3]};
+        float allowed = dist;
+        if (guestLineOfSight(rdram, ctx, runtime, tgt, want))
+        {
+            const float hx = want[0] - tgt[0], hy = want[1] - tgt[1], hz = want[2] - tgt[2];
+            allowed = std::max(kMinDist, std::sqrt(hx * hx + hy * hy + hz * hz) - kWallMargin);
+            ++o.wallHits;
+        }
+        if (allowed < o.shownDist || o.shownDist <= 0.0f)
+            o.shownDist = allowed;
+        else if (dt > 0.0f)
+            o.shownDist += (allowed - o.shownDist) * (1.0f - std::exp(-dt / kWallEaseOut));
+        float out[4];
+        std::memcpy(out, eye, 16);
+        for (int i = 0; i < 3; ++i)
+            out[i] = tgt[i] + dir[i] * o.shownDist;
+        std::memcpy(g_camSavedEye, eye, 16);
+        g_camSaved = true;
+        g_camObj = cam;
+        std::memcpy(mem(cam + 0x1A0), out, 16);
+    }
+
+    void cameraTestTurn(uint32_t cam)
+    {
+        float eye[4], tgt[4];
+        camVec(cam + 0x1A0, eye);
+        camVec(cam + 0x1D0, tgt);
+        std::memcpy(g_camSavedEye, eye, 16);
+        g_camSaved = true;
+        g_camObj = cam;
+        const float a = g_camTestDeg * 3.14159265f / 180.0f, c = std::cos(a), s = std::sin(a);
+        const int i = g_camTestAxis == 0 ? 1 : 0, j = g_camTestAxis == 2 ? 1 : 2; // the plane turned
+        const float di = eye[i] - tgt[i], dj = eye[j] - tgt[j];
+        float out[4];
+        std::memcpy(out, eye, 16);
+        out[i] = tgt[i] + di * c - dj * s;
+        out[j] = tgt[j] + di * s + dj * c;
+        std::memcpy(mem(cam + 0x1A0), out, 16);
+    }
+
+    void cameraUpdateEntry(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const uint32_t cam = reg(ctx, 4);
+        if (g_camSaved && cam == g_camObj)
+            std::memcpy(mem(cam + 0x1A0), g_camSavedEye, 16);
+        g_camSaved = false;
+        g_camPending = cam;
+        g_camAppliedThisUpdate = false;
+        g_original[slotOf(ctx->pc)](rdram, ctx, runtime);
+    }
+
+    void cameraViewEntry(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const uint32_t cam = reg(ctx, 4);
+        if (cam && cam == g_camPending)
+        {
+            const bool again = std::exchange(g_camAppliedThisUpdate, true);
+            if (g_orbit.on)
+                orbitCamera(rdram, ctx, runtime, cam, again);
+            else if (g_camTestDeg != 0.0f && !again)
+                cameraTestTurn(cam);
+            SET_GPR_U32(ctx, 4, cam); // the line-of-sight call put every register back; keep a0 explicit
+        }
+        g_original[slotOf(ctx->pc)](rdram, ctx, runtime);
+    }
+
+    void cameraApplyEntry(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        if (const uint32_t cam = std::exchange(g_camPending, 0u))
+        {
+            ++g_camCalls;
+            // Events (camera type, shake style +0x28, whether the update built its view through func_13C8B0) are logged
+            // whenever the free camera is on, so a tester's log shows why it handed back.
+            if (g_camLog || g_orbit.on)
+            {
+                static uint32_t lastType = ~0u, lastReq = ~0u, lastMode = ~0u;
+                static int lastBuilt = -1;
+                const uint32_t type = rd32(cam + 0x248), req = rd32(cam + 0x5FC), mode = rd32(cam + 0x28);
+                const int built = g_camAppliedThisUpdate ? 1 : 0;
+                if (type != lastType || req != lastReq || mode != lastMode || built != lastBuilt)
+                    logf("camera %llu type %u -> %u, request %d -> %d, shake style %u -> %u, view built %d, +0x604 %u, "
+                         "frame %llu",
+                         static_cast<unsigned long long>(g_camCalls), lastType, type, static_cast<int>(lastReq),
+                         static_cast<int>(req), lastMode, mode, built, rd32(cam + 0x604),
+                         static_cast<unsigned long long>(g_guestFrame.load()));
+                lastType = type;
+                lastReq = req;
+                lastMode = mode;
+                lastBuilt = built;
+            }
+            if (g_camLog)
+            {
+                float eye[4], tgt[4], fol[4];
+                camVec(cam + 0x1A0, eye);
+                camVec(cam + 0x1D0, tgt);
+                camVec(cam + 0x1F0, fol);
+                if (g_camCalls % 25 == 0)
+                {
+                    const float dx = eye[0] - tgt[0], dy = eye[1] - tgt[1], dz = eye[2] - tgt[2];
+                    logf("camera %llu obj %08X mode %u: eye (%.1f %.1f %.1f %.2f) target (%.1f %.1f %.1f) follow (%.1f "
+                         "%.1f %.1f) eye-target (%.1f %.1f %.1f) dist %.1f | orbit %d yaw %.0f pitch %.0f shown %.1f "
+                         "walls %llu/%llu",
+                         static_cast<unsigned long long>(g_camCalls), cam, rd32(cam + 0x28), eye[0], eye[1], eye[2],
+                         eye[3], tgt[0], tgt[1], tgt[2], fol[0], fol[1], fol[2], dx, dy, dz,
+                         std::sqrt(dx * dx + dy * dy + dz * dz), static_cast<int>(g_orbit.mode),
+                         g_orbit.yaw * 57.2958f, g_orbit.pitch * 57.2958f, g_orbit.shownDist,
+                         static_cast<unsigned long long>(g_orbit.wallHits),
+                         static_cast<unsigned long long>(g_orbit.losCalls));
+                }
             }
         }
         g_original[slotOf(ctx->pc)](rdram, ctx, runtime);
@@ -1971,6 +2422,7 @@ namespace
         uint16_t pressed; // active-high mask in libpad bit order
         std::string text;
         uint8_t lx = 0x80, ly = 0x80; // left stick, 0x80 = centred
+        uint8_t rx = 0x80, ry = 0x80; // right stick
         bool byFrame = false;
         bool byTime = false;    // "t<ms>:...:<ms>": start and length in guest milliseconds (EE clock)
         bool anchored = false;  // "a<ms>:...:<ms>": the same, counted from the MAXIMO_PAD_ANCHOR moment
@@ -2029,6 +2481,14 @@ namespace
                     s.lx = 0x00;
                 else if (name == "LRIGHT")
                     s.lx = 0xFF;
+                else if (name == "RUP")
+                    s.ry = 0x00;
+                else if (name == "RDOWN")
+                    s.ry = 0xFF;
+                else if (name == "RLEFT")
+                    s.rx = 0x00;
+                else if (name == "RRIGHT")
+                    s.rx = 0xFF;
                 else if (name.size() > 3 && (name.compare(0, 3, "LX=") == 0 || name.compare(0, 3, "LY=") == 0))
                     (name[1] == 'X' ? s.lx : s.ly) = static_cast<uint8_t>(std::stoul(name.substr(3), nullptr, 16));
                 else if (!m)
@@ -2088,7 +2548,7 @@ namespace
             }
         }
         uint16_t pressed = 0;
-        uint8_t lx = 0x80, ly = 0x80;
+        uint8_t lx = 0x80, ly = 0x80, rx = 0x80, ry = 0x80;
         for (PadStep &s : g_padScript)
         {
             if (s.anchored && anchorMs == UINT64_MAX)
@@ -2102,9 +2562,11 @@ namespace
                 pressed |= s.pressed;
                 lx = s.lx != 0x80 ? s.lx : lx;
                 ly = s.ly != 0x80 ? s.ly : ly;
+                rx = s.rx != 0x80 ? s.rx : rx;
+                ry = s.ry != 0x80 ? s.ry : ry;
             }
         }
-        const bool stickMoved = lx != 0x80 || ly != 0x80;
+        const bool stickMoved = lx != 0x80 || ly != 0x80 || rx != 0x80 || ry != 0x80;
         // MAXIMO_RAM_DUMP=n0,n1,...: write all of RDRAM to ram_<n>.bin at these pad reads (diagnostic snapshots).
         if (static const char *dumps = std::getenv("MAXIMO_RAM_DUMP"); dumps)
             for (const char *p = dumps; *p;)
@@ -2220,10 +2682,35 @@ namespace
             g_padApplied = pressed;
         }
         if (pressed || stickMoved)
-            ps2_stubs::setPadOverrideState(static_cast<uint16_t>(~pressed), lx, ly, 0x80, 0x80);
+            ps2_stubs::setPadOverrideState(static_cast<uint16_t>(~pressed), lx, ly, rx, ry);
         else
             ps2_stubs::clearPadOverrideState();
+        const uint32_t dataAddr = reg(ctx, 6);
         ps2_stubs::scePadRead(rdram, ctx, runtime);
+        // The free camera's input: right stick and R3 from the data the game just got (analog mode, ID 0x7_).
+        if (g_orbit.on && GPR_S32(ctx, 2) != 0 && dataAddr)
+        {
+            const uint8_t *d = mem(dataAddr);
+            static int lastId = -1;
+            if (d[1] != lastId)
+            {
+                logf("camera orbit: pad ID %02X -> %02X (%s) at frame %llu", lastId & 0xFF, d[1],
+                     (d[1] & 0xF0) == 0x70 ? "analog: right stick read" : "not analog: no right stick",
+                     static_cast<unsigned long long>(g_guestFrame.load()));
+                lastId = d[1];
+            }
+            if ((d[1] & 0xF0) == 0x70)
+            {
+                g_orbit.rx = d[4];
+                g_orbit.ry = d[5];
+                g_orbit.r3 = (d[2] & 0x04) == 0; // active-low, R3 = bit 2 of the first button byte
+            }
+            else
+            {
+                g_orbit.rx = g_orbit.ry = 0x80;
+                g_orbit.r3 = false;
+            }
+        }
     }
 
     // ---- MMIO trace ----------------------------------------------------------------------------
@@ -3845,6 +4332,41 @@ int main(int argc, char **argv)
         }
         else
             logf("frame rate: MAXIMO_FRAME_RATE=%s is not supported (50 or 60); keeping 50 Hz", rate);
+    }
+    {
+        const char *camLog = std::getenv("MAXIMO_CAMERA_LOG");
+        const char *camTest = std::getenv("MAXIMO_CAMERA_TEST");
+        g_camLog = camLog && std::strcmp(camLog, "0") != 0;
+        if (camTest)
+        {
+            g_camTestDeg = static_cast<float>(std::atof(camTest));
+            if (const char *comma = std::strchr(camTest, ','))
+                g_camTestAxis = comma[1] == 'x' ? 0 : comma[1] == 'z' ? 2 : 1;
+        }
+        if (const char *mode = std::getenv("MAXIMO_CAMERA"); mode && std::strcmp(mode, "orbit") == 0)
+        {
+            g_orbit.on = true;
+            if (const char *speed = std::getenv("MAXIMO_CAMERA_SPEED"))
+            {
+                const float deg = static_cast<float>(std::atof(speed));
+                if (deg > 0.0f && deg <= 1000.0f)
+                    g_orbit.speed = deg * 3.14159265f / 180.0f;
+            }
+            if (const char *ret = std::getenv("MAXIMO_CAMERA_RETURN"))
+                g_orbit.returnDelay = std::max(0.0f, static_cast<float>(std::atof(ret)));
+            const char *invert = std::getenv("MAXIMO_CAMERA_INVERT_Y");
+            g_orbit.invertY = invert && std::strcmp(invert, "0") != 0;
+            logf("camera: free camera on (right stick orbits, R3 hands back), %.0f degrees/s%s, back after %.1f s",
+                 g_orbit.speed * 57.2958f, g_orbit.invertY ? ", inverted up/down" : "", g_orbit.returnDelay);
+        }
+        if (g_camLog || g_camTestDeg != 0.0f || g_orbit.on)
+        {
+            runtime.replaceFunction(kCameraUpdateFn, cameraUpdateEntry);
+            runtime.replaceFunction(kCameraApplyFn, cameraApplyEntry);
+            runtime.replaceFunction(kCameraViewFn, cameraViewEntry);
+            logf("camera probe: log %d, test %.1f degrees about %c", g_camLog ? 1 : 0, g_camTestDeg,
+                 "xyz"[g_camTestAxis]);
+        }
     }
     if (const char *spin = std::getenv("MAXIMO_SPIN_SKIP"); !spin || std::strcmp(spin, "0") != 0)
     {

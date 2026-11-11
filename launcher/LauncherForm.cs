@@ -39,6 +39,8 @@ class LauncherForm : Form
     readonly Button zipLogs = new Button(), openSaves = new Button(), openLogs = new Button(), openShots = new Button();
     readonly CheckBox recordAudio = new CheckBox(), vu1Thread = new CheckBox(), vu1Pipeline = new CheckBox(), borderless = new CheckBox(), softParticles = new CheckBox(), vsync = new CheckBox();
     readonly CheckBox hdTextures = new CheckBox();
+    readonly CheckBox freeCamera = new CheckBox(), cameraInvert = new CheckBox();
+    readonly ComboBox cameraSpeed = new ComboBox(), cameraReturn = new ComboBox();
     readonly Button hdTexturesButton = new Button(), controlsButton = new Button();
     readonly ComboBox picture = new ComboBox(), scaling = new ComboBox(), aspect = new ComboBox(), frameRate = new ComboBox();
     readonly TextBox notes = new TextBox(), buildLog = new TextBox();
@@ -407,6 +409,25 @@ class LauncherForm : Form
         p.Controls.Add(c);
     }
 
+    // A label and a small drop-down on one row (for settings under a tick).
+    void Small(Panel p, ComboBox c, string label, object[] items, int value, int x, int y, int labelWidth, int width, Action changed)
+    {
+        Text2Label(p, label, x, y + 4, labelWidth, 30, Text1, 17f);
+        c.DropDownStyle = ComboBoxStyle.DropDownList;
+        DarkCombo(c);
+        c.Font = new Font("Segoe UI", 17f * scale, GraphicsUnit.Pixel);
+        c.Items.AddRange(items);
+        c.SelectedIndex = value;
+        c.Bounds = R(new Rectangle(x + labelWidth, y, width, 30));
+        c.SelectedIndexChanged += delegate { changed(); };
+        p.Controls.Add(c);
+    }
+
+    void RefreshCamera()
+    {
+        cameraSpeed.Enabled = cameraReturn.Enabled = cameraInvert.Enabled = freeCamera.Checked;
+    }
+
     void Action2(Panel p, Button b, string text, int x, int y, int w, EventHandler click)
     {
         b.Text = text;
@@ -456,6 +477,16 @@ class LauncherForm : Form
         Tick(p, vu1Thread, "Faster 3D: use a second CPU core for the 3D graphics", Picture.Vu1Thread, 28, 256, 900, delegate { Picture.Vu1Thread = vu1Thread.Checked; vu1Pipeline.Enabled = vu1Thread.Checked; Picture.Save(); });
         Tick(p, vu1Pipeline, "Overlap frames: draw each frame while the game works on the next", Picture.Vu1Pipeline, 56, 292, 870, delegate { Picture.Vu1Pipeline = vu1Pipeline.Checked; Picture.Save(); });
         vu1Pipeline.Enabled = Picture.Vu1Thread;
+        Tick(p, freeCamera, "Free camera: the right stick turns the camera around Maximo (experimental)", Picture.FreeCamera, 28, 336, 960,
+             delegate { Picture.FreeCamera = freeCamera.Checked; RefreshCamera(); Picture.Save(); });
+        Small(p, cameraSpeed, "Speed", Picture.CameraSpeedNames, Picture.CameraSpeed, 56, 376, 70, 170,
+              delegate { Picture.CameraSpeed = cameraSpeed.SelectedIndex; Picture.Save(); });
+        Small(p, cameraReturn, "Swing back behind Maximo", Picture.CameraReturnNames, Picture.CameraReturn, 330, 376, 230, 200,
+              delegate { Picture.CameraReturn = cameraReturn.SelectedIndex; Picture.Save(); });
+        tips.SetToolTip(cameraReturn, "How long after you let go of the right stick the camera turns back behind Maximo by itself");
+        Tick(p, cameraInvert, "Invert up/down", Picture.CameraInvertY, 56, 416, 400, delegate { Picture.CameraInvertY = cameraInvert.Checked; Picture.Save(); });
+        Text2Label(p, "R3 (click the right stick) swings it back at once. Keyboard: I J K L turn it, R swings it back (see Controls).", 56, 448, 900, 26, Text2);
+        RefreshCamera();
 
         p = NewPage(3, "HD Textures");
         Tick(p, hdTextures, "Use HD textures", HdTextures.Enabled, 28, 80, 500, delegate { HdTextures.Enabled = hdTextures.Checked; Picture.Save(); });
@@ -572,7 +603,7 @@ class LauncherForm : Form
         busy = on;
         EnableAll(this, !on);
         cancelBuild.Enabled = building;
-        if (!on) { vu1Pipeline.Enabled = vu1Thread.Checked; Refresh2(); RefreshBanner(); }
+        if (!on) { vu1Pipeline.Enabled = vu1Thread.Checked; RefreshCamera(); Refresh2(); RefreshBanner(); }
         Invalidate();
     }
 
