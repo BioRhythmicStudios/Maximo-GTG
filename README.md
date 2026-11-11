@@ -69,16 +69,43 @@ Then open `dist\MaximoLauncher.exe`. Add `--no-ffmpeg` to skip FFmpeg; the game 
 
 | Key | Action |
 | --- | --- |
-| WASD | Left stick |
-| X, Z, C, V | Cross, Square, Circle, Triangle |
-| Q, E, 1, 3 | L1, R1, L2, R2 |
-| Enter | Start |
+| WASD or arrow keys | D-pad |
+| X or Space, C, Z, V | Cross, Circle, Square, Triangle |
+| Q, E, Left Shift, Right Shift | L1, R1, L2, R2 |
+| Enter, Tab | Start, Select |
 | F12 | Screenshot for the launcher's banner |
 | Alt+Enter | Fullscreen or window |
 | Esc | Quit |
 
-Controllers work too: plug yours in before pressing Play. The launcher's banner is built from your own disc and your
-F12 screenshots, on your PC only.
+Controllers work too: Xbox, PlayStation (DualSense, DualShock 4) and most others. The game uses the first one it
+recognises, and the keyboard keeps working alongside it. The launcher's banner is built from your own disc and your F12
+screenshots, on your PC only.
+
+### Changing the controls
+
+Open **Controls** in the launcher and press **Change controls...** to set two keys and a controller button for each PS2
+button. You can also bind keys or buttons that push the left stick fully. Esc, F12 and Alt+Enter stay with the game
+window.
+
+The launcher saves your choice in `controls.ini` beside it, and the game reads that file itself. With an older launcher
+you can write the file by hand:
+
+```ini
+[keyboard]
+cross = X, SPACE
+stick_up = W
+[controller]
+cross = SOUTH
+```
+
+Each line is one PS2 button (`up down left right cross circle square triangle l1 r1 l2 r2 l3 r3 start select`) or a full
+left-stick push (`stick_up stick_down stick_left stick_right`). Keys use their position on a US keyboard (`A`, `1`,
+`SPACE`, `LEFT_SHIFT`, `KP_0`, `F1`...). Controller buttons are `SOUTH EAST WEST NORTH` (by position), `DPAD_UP`,
+`DPAD_DOWN`, `DPAD_LEFT`, `DPAD_RIGHT`, `L1 R1 L2 R2 L3 R3`, `START` and `SELECT`. Lines you leave out keep their
+defaults. Delete the file to go back to the defaults.
+
+A controller the game doesn't recognise: put a `gamecontrollerdb.txt` (from the SDL_GameControllerDB project) in the
+`game` folder. Each session's `stdout.txt` in `logs` lists the controllers the game found, in lines starting `[pad]`.
 
 ## HD textures
 

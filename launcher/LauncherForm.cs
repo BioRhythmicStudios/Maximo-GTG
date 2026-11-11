@@ -39,7 +39,7 @@ class LauncherForm : Form
     readonly Button zipLogs = new Button(), openSaves = new Button(), openLogs = new Button(), openShots = new Button();
     readonly CheckBox recordAudio = new CheckBox(), vu1Thread = new CheckBox(), vu1Pipeline = new CheckBox(), borderless = new CheckBox(), softParticles = new CheckBox(), vsync = new CheckBox();
     readonly CheckBox hdTextures = new CheckBox();
-    readonly Button hdTexturesButton = new Button();
+    readonly Button hdTexturesButton = new Button(), controlsButton = new Button();
     readonly ComboBox picture = new ComboBox(), scaling = new ComboBox(), aspect = new ComboBox(), frameRate = new ComboBox();
     readonly TextBox notes = new TextBox(), buildLog = new TextBox();
     readonly Button rebuild = new Button(), cancelBuild = new Button();
@@ -433,12 +433,20 @@ class LauncherForm : Form
         Text2Label(p, "Stops the picture tearing. Turn it off only if the game feels delayed.", 56, 252, 800, 26, Text2);
 
         p = NewPage(1, "Controls");
-        Text2Label(p, "Controller", 28, 80, 900, 28, Gold, 19f);
-        Text2Label(p, "Plug it in before pressing Play. Xbox layout: A = Cross, B = Circle, X = Square, Y = Triangle.", 28, 110, 980, 30, Text1, 17f);
+        Text2Label(p, "Controller", 28, 74, 900, 28, Gold, 19f);
+        Text2Label(p, "Xbox, PlayStation (DualSense, DualShock 4) and most other controllers work. Cross / A = Cross, " +
+                      "Circle / B = Circle, and so on.", 28, 104, 980, 54, Text1, 17f);
         Text2Label(p, "Keyboard", 28, 164, 900, 28, Gold, 19f);
-        Text2Label(p, "WASD = left stick     X = Cross     Z = Square     C = Circle     V = Triangle\r\nQ / E = L1 / R1     1 / 3 = L2 / R2     Enter = Start", 28, 194, 980, 60, Text1, 17f);
-        Text2Label(p, "In the game", 28, 276, 900, 28, Gold, 19f);
-        Text2Label(p, "F12 = screenshot for the banner     Alt+Enter = fullscreen or window     Esc = quit the game", 28, 306, 980, 30, Text1, 17f);
+        Text2Label(p, "", 28, 194, 980, 84, Text1, 17f).Name = "keyboardSummary";
+        Action2(p, controlsButton, "Change controls...", 28, 284, 240, delegate
+        {
+            using (var form = new ControlsForm()) form.ShowDialog(this);
+            RefreshControls();
+        });
+        Text2Label(p, "Keys and controller buttons, for the keyboard and any controller.", 284, 292, 720, 28, Text2);
+        Text2Label(p, "In the game", 28, 350, 900, 28, Gold, 19f);
+        Text2Label(p, "F12 = screenshot for the banner     Alt+Enter = fullscreen or window     Esc = quit the game", 28, 380, 980, 30, Text1, 17f);
+        RefreshControls();
 
         p = NewPage(2, "Enhancements");
         Choice(p, aspect, "Aspect", Picture.AspectNames, Picture.Aspect, 80, delegate { Picture.Aspect = aspect.SelectedIndex; Picture.Save(); });
@@ -525,6 +533,12 @@ class LauncherForm : Form
                       "CHARACTERS by © 2002 SUSUMU MATSUSHITA COMPANY / MASTER LICENSOR DREAM RANCH INC.\r\n" +
                       "All rights to Maximo: Ghosts to Glory are reserved to Capcom.", 28, 256, 980, 112, Text1);
         Text2Label(p, "Unofficial fan project. Not affiliated with or endorsed by Capcom.", 28, 376, 980, 28, Text2);
+    }
+
+    void RefreshControls()
+    {
+        Control[] found = pages[1].Controls.Find("keyboardSummary", false);
+        if (found.Length > 0) found[0].Text = Bindings.KeyboardSummary();
     }
 
     // ---- the game ----

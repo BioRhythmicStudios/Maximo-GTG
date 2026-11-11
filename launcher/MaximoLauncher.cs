@@ -28,8 +28,8 @@ using System.Windows.Forms;
 [assembly: AssemblyCompany("Biorhythmic Studios")]
 [assembly: AssemblyProduct("Maximo Launcher")]
 [assembly: AssemblyCopyright("Copyright (C) 2026 Biorhythmic Studios. GPL-3.0.")]
-[assembly: AssemblyVersion("1.0.1.0")]
-[assembly: AssemblyFileVersion("1.0.1.0")]
+[assembly: AssemblyVersion("1.1.0.0")]
+[assembly: AssemblyFileVersion("1.1.0.0")]
 
 static class Build
 {
@@ -414,8 +414,9 @@ static class Game
         if (recordAudio)
             info.EnvironmentVariables["MAXIMO_AUDIO_WAV"] = "audio.wav";
         Picture.Apply(info);
+        Bindings.Apply(info);
 
-        Log.Write("play: session " + Path.GetFileName(session) + ", picture: " + Picture.Describe() +
+        Log.Write("play: session " + Path.GetFileName(session) + ", picture: " + Picture.Describe() + Bindings.Describe() +
                   (recordAudio ? ", recording audio" : ""));
         var started = DateTime.Now;
         int exitCode;
@@ -551,7 +552,9 @@ static class Game
             using (var w = new StreamWriter(archive.CreateEntry("notes.txt").Open(), new UTF8Encoding(false)))
             {
                 w.WriteLine("Build: " + Build.Version);
-                w.WriteLine("Picture: " + Picture.Describe());
+                w.WriteLine("Picture: " + Picture.Describe() + Bindings.Describe());
+                if (File.Exists(Bindings.File_))
+                    w.WriteLine("Controls file:\r\n" + File.ReadAllText(Bindings.File_));
                 w.WriteLine("Session: " + Path.GetFileName(session) + ", zipped " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
                 w.WriteLine();
                 w.WriteLine(string.IsNullOrWhiteSpace(notes) ? "(no description given)" : notes.Trim());
@@ -568,12 +571,28 @@ static class Program
     static int Main(string[] args)
     {
         Picture.Load();
+        Bindings.Load();
 #if DEV_SWITCHES
         try
         {
             if (args.Length == 2 && args[0] == "--setup")
             {
                 Setup.Install(args[1], s => { });
+                return 0;
+            }
+            if (args.Length == 2 && args[0] == "--screenshot-controls")
+            {
+                Application.EnableVisualStyles();
+                using (var form = new ControlsForm())
+                {
+                    form.Show();
+                    Application.DoEvents();
+                    using (var bitmap = new Bitmap(form.Width, form.Height))
+                    {
+                        form.DrawToBitmap(bitmap, new Rectangle(0, 0, form.Width, form.Height));
+                        bitmap.Save(args[1], System.Drawing.Imaging.ImageFormat.Png);
+                    }
+                }
                 return 0;
             }
             if (args.Length >= 2 && args[0] == "--screenshot")
